@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tmux-orche"
-version = "0.4.0"
+dynamic = ["version"]
 description = "Typer-based CLI for tmux-backed Codex orchestration sessions"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -26,6 +26,9 @@ orche = "cli:main"
 package-dir = {"" = "src"}
 py-modules = ["backend", "cli", "notify_hook", "paths", "version"]
 packages = ["notify"]
+
+[tool.setuptools.dynamic]
+version = {attr = "version.__version__"}
 
 [tool.pytest.ini_options]
 addopts = "-q --cov=notify --cov-branch --cov-report=term-missing"

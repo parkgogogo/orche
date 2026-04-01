@@ -1,3 +1,5 @@
 """tmux-orche: tmux-backed Codex orchestration."""
 
-__version__ = "0.3.3"
+from version import __version__
+
+__all__ = ["__version__"]
