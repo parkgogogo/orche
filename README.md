@@ -152,6 +152,8 @@ Codex Notify Bot -> same Discord channel (#coding)
 
 ## Installation
 
+Agent-guided install guide: <https://github.com/parkgogogo/tmux-orche/raw/main/install.md>
+
 ### Install with pip
 
 From PyPI:

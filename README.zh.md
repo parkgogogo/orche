@@ -152,6 +152,8 @@ Codex Notify Bot -> same Discord channel (#coding)
 
 ## 安装
 
+面向 agent 引导安装的完整说明：<https://github.com/parkgogogo/tmux-orche/raw/main/install.md>
+
 ### 使用 pip 安装
 
 从 PyPI 安装：
