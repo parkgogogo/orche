@@ -1,0 +1,19 @@
+考虑添加 orche setup-notify 命令，自动为用户配置 Codex notify。
+
+需要检查/实现：
+1. 检查 ~/.codex/config.toml 是否存在
+2. 如果不存在，创建基础配置并添加 notify = ["/bin/bash", "..."]
+3. 如果存在，检查是否已有 notify 配置，没有则添加
+4. 把 discord-turn-notify.sh 脚本复制到 ~/.codex/hooks/（或者 orche 里自带一个简化版）
+5. 处理 BOT_TOKEN 等敏感配置（引导用户手动填入或用环境变量）
+
+评估可行性：
+- 修改用户 ~/.codex/config.toml 是否安全/合适？
+- 是自动配置好，还是只在 README 里引导用户手动添加？
+
+如果决定不做自动配置，就更新 README，添加清晰的 "Codex Notify Setup" 章节，告诉用户：
+1. 在 ~/.codex/config.toml 里添加 notify = [...]
+2. 创建 ~/.codex/hooks/discord-turn-notify.sh
+3. 配置 BOT_TOKEN 和 CHANNEL_ID
+
+给出你的结论和实现（或文档更新）。

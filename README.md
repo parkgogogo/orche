@@ -265,6 +265,64 @@ notify = ["/bin/bash", "/Users/dnq/.codex/hooks/discord-turn-notify.sh"]
 
 That hook can then read `~/config/orch.json`, inspect the Codex payload, and post to Discord.
 
+### Codex Notify Setup
+
+Automatic setup is intentionally not built into `orche`.
+
+Reasons:
+
+- `~/.codex/config.toml` is global user config, not repo-local state
+- users may already have a custom `notify` pipeline that should not be overwritten
+- Discord bot tokens are sensitive and should not be silently written into scripts or config files
+
+The recommended setup is manual and explicit.
+
+1. Ensure `~/.codex/config.toml` exists.
+
+2. Add the notify hook entry:
+
+```toml
+notify = ["/bin/bash", "/Users/dnq/.codex/hooks/discord-turn-notify.sh"]
+```
+
+3. Create `~/.codex/hooks/discord-turn-notify.sh` if it does not already exist.
+
+4. In that hook:
+   - read `~/config/orch.json` to get `codex_turn_complete_channel_id`, `session`, and `cwd`
+   - read the Codex JSON payload passed into the hook
+   - call `orche turn-summary --session "$session"` when you need a concise completion summary
+
+5. Provide secrets safely:
+   - prefer environment variables such as `DISCORD_BOT_TOKEN`
+   - avoid hardcoding tokens into tracked files
+   - keep `CHANNEL_ID` in `orche session-new --discord-channel-id ...` so it is written to `~/config/orch.json`
+
+Example shell pattern:
+
+```bash
+export DISCORD_BOT_TOKEN="your-token"
+orche session-new \
+  --cwd /path/to/repo \
+  --agent codex \
+  --name repo-codex-main \
+  --discord-channel-id 123456789012345678
+```
+
+Then inside the hook:
+
+```bash
+session="$(jq -r '.session // ""' ~/config/orch.json)"
+summary="$(orche turn-summary --session "$session" 2>/dev/null || true)"
+channel_id="$(jq -r '.codex_turn_complete_channel_id // ""' ~/config/orch.json)"
+bot_token="${DISCORD_BOT_TOKEN:-}"
+```
+
+This keeps the responsibility split cleanly:
+
+- Codex emits notify events
+- the hook handles external delivery
+- `orche` provides session metadata and summary extraction
+
 ### Using `orche` with the Existing Hook
 
 1. Start or reuse a session:
