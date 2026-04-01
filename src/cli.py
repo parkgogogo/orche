@@ -12,8 +12,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from . import __version__
-from .backend import (
+from backend import (
     BACKEND,
     OrcheError,
     append_action_history,
@@ -36,8 +35,9 @@ from .backend import (
     send_prompt,
     set_config_value,
 )
-from .notify import NotificationService, build_message_from_payload, load_notify_config, parse_payload
-from .paths import ensure_directories
+from notify import NotificationService, build_message_from_payload, load_notify_config, parse_payload
+from paths import ensure_directories
+from version import __version__
 
 app = typer.Typer(
     name="orche",

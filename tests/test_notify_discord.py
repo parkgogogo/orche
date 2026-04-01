@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from orche.notify.config import DiscordNotifyConfig
-from orche.notify.discord import DEFAULT_USER_AGENT, DiscordNotifier
-from orche.notify.exceptions import NotifyConfigError, NotifyDeliveryError
-from orche.notify.http import HTTPResponse
-from orche.notify.models import Message
+from notify.config import DiscordNotifyConfig
+from notify.discord import DEFAULT_USER_AGENT, DiscordNotifier
+from notify.exceptions import NotifyConfigError, NotifyDeliveryError
+from notify.http import HTTPResponse
+from notify.models import Message
 
 
 def test_discord_notifier_sends_via_bot_token(fake_http_client):

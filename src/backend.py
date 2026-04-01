@@ -14,8 +14,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 
-from .notify_hook import NOTIFY_DISCORD_SH
-from .paths import config_path, ensure_directories, history_dir, locks_dir, meta_dir, orch_log_path
+from notify_hook import NOTIFY_DISCORD_SH
+from paths import config_path, ensure_directories, history_dir, locks_dir, meta_dir, orch_log_path
 
 BACKEND = "smux"
 TMUX_SESSION = "orche-smux"

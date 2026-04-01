@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from orche.notify.base import Notifier
-from orche.notify.config import NotifyConfig
-from orche.notify.models import DeliveryResult, Message
-from orche.notify.registry import NotifierRegistry
-from orche.notify.service import NotificationService, dispatch_payload
+from notify.base import Notifier
+from notify.config import NotifyConfig
+from notify.models import DeliveryResult, Message
+from notify.registry import NotifierRegistry
+from notify.service import NotificationService, dispatch_payload
 
 
 class SuccessNotifier(Notifier):

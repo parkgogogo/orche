@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import urllib.error
 
-from orche.notify.http import UrllibHTTPClient
+from notify.http import UrllibHTTPClient
 
 
 class FakeResponse:

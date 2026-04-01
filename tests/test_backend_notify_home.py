@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from orche import backend
-from orche.notify_hook import NOTIFY_DISCORD_SH
+import backend
+from notify_hook import NOTIFY_DISCORD_SH
 
 
 def test_ensure_managed_codex_home_rewrites_notify_config(tmp_path, monkeypatch):

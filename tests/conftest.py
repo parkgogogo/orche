@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from orche.notify.http import HTTPResponse
+from notify.http import HTTPResponse
 
 
 class FakeHTTPClient:

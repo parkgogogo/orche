@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from orche import backend
-from orche.cli import app
+import backend
+from cli import app
 
 
 def test_history_command_shows_recent_entries(xdg_runtime):

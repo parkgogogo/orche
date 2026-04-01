@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from orche.notify.base import Notifier
-from orche.notify.config import NotifyConfig
-from orche.notify.exceptions import NotifyConfigError
-from orche.notify.models import DeliveryResult
-from orche.notify.registry import NotifierRegistry
+from notify.base import Notifier
+from notify.config import NotifyConfig
+from notify.exceptions import NotifyConfigError
+from notify.models import DeliveryResult
+from notify.registry import NotifierRegistry
 
 
 class DummyNotifier(Notifier):

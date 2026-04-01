@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from orche.cli import app
-from orche.notify.http import HTTPResponse
+from cli import app
+from notify.http import HTTPResponse
 
 from .conftest import FakeHTTPClient, write_runtime_config
 
@@ -18,7 +18,7 @@ class StubHTTPClientFactory:
 
 def test_notify_hidden_command_reads_stdin_and_sends_message(xdg_runtime, monkeypatch):
     fake_client = FakeHTTPClient()
-    monkeypatch.setattr("orche.notify.discord.UrllibHTTPClient", StubHTTPClientFactory(fake_client))
+    monkeypatch.setattr("notify.discord.UrllibHTTPClient", StubHTTPClientFactory(fake_client))
     write_runtime_config(
         xdg_runtime["config_path"],
         {
@@ -44,7 +44,7 @@ def test_notify_hidden_command_reads_stdin_and_sends_message(xdg_runtime, monkey
 
 def test_notify_hidden_command_verbose_prints_config_and_message(xdg_runtime, monkeypatch):
     fake_client = FakeHTTPClient()
-    monkeypatch.setattr("orche.notify.discord.UrllibHTTPClient", StubHTTPClientFactory(fake_client))
+    monkeypatch.setattr("notify.discord.UrllibHTTPClient", StubHTTPClientFactory(fake_client))
     write_runtime_config(
         xdg_runtime["config_path"],
         {
@@ -74,7 +74,7 @@ def test_notify_hidden_command_verbose_prints_config_and_message(xdg_runtime, mo
 
 def test_notify_hidden_command_failure_prints_error_and_returns_nonzero(xdg_runtime, monkeypatch):
     fake_client = FakeHTTPClient(responses=[HTTPResponse(403, '{"message":"forbidden"}')])
-    monkeypatch.setattr("orche.notify.discord.UrllibHTTPClient", StubHTTPClientFactory(fake_client))
+    monkeypatch.setattr("notify.discord.UrllibHTTPClient", StubHTTPClientFactory(fake_client))
     write_runtime_config(
         xdg_runtime["config_path"],
         {

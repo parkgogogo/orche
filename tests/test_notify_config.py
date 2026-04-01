@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from orche.notify.config import DEFAULT_MENTION_USER_ID, load_notify_config
+from notify.config import DEFAULT_MENTION_USER_ID, load_notify_config
 
 
 def test_load_notify_config_reads_env_and_targets(monkeypatch):

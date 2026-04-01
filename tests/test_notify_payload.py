@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from orche.notify.config import DiscordNotifyConfig, NotifyConfig
-from orche.notify.payload import build_message_from_payload, parse_payload, summarize_assistant_message
+from notify.config import DiscordNotifyConfig, NotifyConfig
+from notify.payload import build_message_from_payload, parse_payload, summarize_assistant_message
 
 
 def test_parse_payload_rejects_invalid_json():
@@ -199,4 +199,3 @@ def test_summarize_assistant_message_keeps_short_code_block_and_unclosed_fence()
     )
 
     assert summary == "**Heading**\n\n```py\nprint('x')\n```"
-

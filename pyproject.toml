@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling>=1.27.0"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "tmux-orche"
@@ -20,19 +20,21 @@ test = [
 ]
 
 [project.scripts]
-orche = "orche.cli:main"
+orche = "cli:main"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/orche"]
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["backend", "cli", "notify_hook", "paths", "version"]
+packages = ["notify"]
 
 [tool.pytest.ini_options]
-addopts = "-q --cov=orche.notify --cov-branch --cov-report=term-missing"
+addopts = "-q --cov=notify --cov-branch --cov-report=term-missing"
 pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.coverage.run]
 branch = true
-source = ["orche.notify"]
+source = ["notify"]
 
 [tool.coverage.report]
 fail_under = 100
