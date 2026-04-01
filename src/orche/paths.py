@@ -29,10 +29,6 @@ def config_path() -> Path:
     return config_dir() / CONFIG_FILE_NAME
 
 
-def legacy_orch_config_path() -> Path:
-    return Path.home() / "config" / "orch.json"
-
-
 def data_dir() -> Path:
     return xdg_data_home() / APP_NAME
 
@@ -64,7 +60,6 @@ def orch_log_path() -> Path:
 def ensure_directories() -> None:
     for path in (
         config_dir(),
-        legacy_orch_config_path().parent,
         data_dir(),
         history_dir(),
         meta_dir(),

@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 
-from .paths import config_path, ensure_directories, history_dir, legacy_orch_config_path, locks_dir, meta_dir, orch_log_path
+from .paths import config_path, ensure_directories, history_dir, locks_dir, meta_dir, orch_log_path
 
 BACKEND = "smux"
 TMUX_SESSION = "orche-smux"
@@ -371,16 +371,17 @@ def load_config() -> Dict[str, Any]:
         "session": "",
         "discord_session": "",
     }
+    path = config_path()
+    if not path.exists():
+        return default
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return default
+    if not isinstance(data, dict):
+        return default
     merged = dict(default)
-    for path in (legacy_orch_config_path(), config_path()):
-        if not path.exists():
-            continue
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            continue
-        if isinstance(data, dict):
-            merged.update(data)
+    merged.update(data)
     return merged
 
 
@@ -388,7 +389,6 @@ def save_config(config: Dict[str, Any]) -> None:
     ensure_directories()
     payload = json.dumps(config, indent=2, ensure_ascii=False) + "\n"
     config_path().write_text(payload, encoding="utf-8")
-    legacy_orch_config_path().write_text(payload, encoding="utf-8")
 
 
 def validate_discord_channel_id(value: str) -> str:

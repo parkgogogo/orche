@@ -11,7 +11,7 @@ Modern tmux-backed Codex orchestration for persistent CLI sessions.
 - Fire-and-forget prompt submission with later inspection via the same session
 - XDG-compliant config and state paths
 - Compatible with the existing tmux + `tmux-bridge` orchestration model
-- Works with Codex native notify hooks through `~/config/orch.json`
+- Works with Codex native notify hooks through XDG config at `~/.config/orche/config.json`
 
 ## Installation
 
@@ -165,12 +165,6 @@ Primary config file:
 ~/.config/orche/config.json
 ```
 
-Compatibility config file for existing notify hooks:
-
-```text
-~/config/orch.json
-```
-
 State directory:
 
 ```text
@@ -191,7 +185,7 @@ The runtime config stores fields such as:
 - `codex_turn_complete_channel_id`
 - current `cwd`, `agent`, and `pane_id`
 
-Whenever `orche` updates its runtime config, it mirrors the data to `~/config/orch.json` so existing Codex notify hooks can keep working.
+Notification hooks and helper scripts should read `~/.config/orche/config.json` or use `orche config get ...`.
 
 You can manage notification-related config directly from the CLI:
 
@@ -251,7 +245,7 @@ Codex native notify
     v
 discord-turn-notify.sh
     |
-    +--> reads ~/config/orch.json written by orche
+    +--> reads ~/.config/orche/config.json written by orche
     |
     +--> reads Codex JSON payload
     |
@@ -265,7 +259,6 @@ Discord
 
 - `orche session-new` writes the active session context to both:
   - `~/.config/orche/config.json`
-  - `~/config/orch.json`
 - `orche turn-summary --session <name>` exposes the current turn-summary logic in a CLI-friendly way
 - `orche _turn-summary --session <name>` is also available as a hidden compatibility alias
 - `orche config get/set/list` provides a stable interface for notification secrets and channel settings
@@ -284,7 +277,7 @@ In `~/.codex/config.toml`:
 notify = ["/bin/bash", "/Users/dnq/.codex/hooks/discord-turn-notify.sh"]
 ```
 
-That hook can then read `~/config/orch.json`, inspect the Codex payload, and post to Discord.
+That hook can then read `~/.config/orche/config.json`, inspect the Codex payload, and post to Discord.
 
 If you want to use the repo-local adapted hook instead, point Codex at:
 
@@ -315,7 +308,7 @@ notify = ["/bin/bash", "/Users/dnq/.codex/hooks/discord-turn-notify.sh"]
 3. Create `~/.codex/hooks/discord-turn-notify.sh` if it does not already exist.
 
 4. In that hook:
-   - read `~/config/orch.json` to get `codex_turn_complete_channel_id`, `session`, and `cwd`
+   - read `~/.config/orche/config.json` to get `codex_turn_complete_channel_id`, `session`, and `cwd`
    - read the Codex JSON payload passed into the hook
    - call `orche turn-summary --session "$session"` when you need a concise completion summary
 
@@ -339,7 +332,7 @@ orche session-new \
 Then inside the hook:
 
 ```bash
-session="$(jq -r '.session // ""' ~/config/orch.json)"
+session="$(jq -r '.session // ""' ~/.config/orche/config.json)"
 summary="$(orche turn-summary --session "$session" 2>/dev/null || true)"
 channel_id="$(orche config get discord.channel-id)"
 bot_token="${DISCORD_BOT_TOKEN:-$(orche config get discord.bot-token)}"
@@ -377,7 +370,7 @@ orche prompt --session repo-codex-main --prompt "review the latest changes"
 - `agent`
 - `pane_id`
 
-from `~/config/orch.json`.
+from `~/.config/orche/config.json`.
 
 4. If the hook needs a short completion summary, it should call:
 

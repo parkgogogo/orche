@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-CONFIG_PATH="${HOME}/config/orch.json"
+CONFIG_PATH="${XDG_CONFIG_HOME:-$HOME/.config}/orche/config.json"
 DEFAULT_ORCHE_BIN="orche"
 if [ -x "${REPO_ROOT}/.venv/bin/orche" ]; then
   DEFAULT_ORCHE_BIN="${REPO_ROOT}/.venv/bin/orche"
