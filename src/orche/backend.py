@@ -228,7 +228,7 @@ def ensure_managed_codex_home(session: str, *, discord_channel_id: Optional[str]
             target.mkdir(parents=True, exist_ok=True)
     write_notify_hook(default_notify_hook_path(target))
     rewrite_codex_config(target, session=session, discord_channel_id=discord_channel_id)
-    return target
+    return target.resolve()
 
 
 def history_path(session: str) -> Path:
