@@ -23,6 +23,7 @@ from .backend import (
     default_session_name,
     ensure_session,
     load_history_entries,
+    latest_turn_summary,
     log_exception,
     resolve_session_context,
     send_prompt,
@@ -207,6 +208,23 @@ def close(
         console.print(session)
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)
+
+
+@app.command("turn-summary")
+def turn_summary(
+    session: str = typer.Option(..., "--session", help="Session name."),
+) -> None:
+    try:
+        console.print(latest_turn_summary(session))
+    except (OrcheError, subprocess.CalledProcessError) as exc:
+        _handle_error(exc)
+
+
+@app.command("_turn-summary", hidden=True)
+def turn_summary_hidden(
+    session: str = typer.Option(..., "--session", help="Session name."),
+) -> None:
+    turn_summary(session=session)
 
 
 @app.command("history", hidden=True)

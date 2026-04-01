@@ -11,6 +11,7 @@ Modern tmux-backed Codex orchestration for persistent CLI sessions.
 - Fire-and-forget prompt submission with later inspection via the same session
 - XDG-compliant config and state paths
 - Compatible with the existing tmux + `tmux-bridge` orchestration model
+- Works with Codex native notify hooks through `~/config/orch.json`
 
 ## Installation
 
@@ -69,7 +70,7 @@ Create or reuse a persistent Codex session:
 orche session-new --cwd /path/to/repo --agent codex
 ```
 
-Create a named session and bind a Discord channel for notifications:
+Create a named session and bind a Discord channel for native Codex notify hooks:
 
 ```bash
 orche session-new \
@@ -110,6 +111,12 @@ orche keys --session repo-codex-main --key Enter
 orche keys --session repo-codex-main --key Escape --key Enter
 ```
 
+Get the latest turn summary:
+
+```bash
+orche turn-summary --session repo-codex-main
+```
+
 Interrupt the running task:
 
 ```bash
@@ -134,6 +141,7 @@ orche close --session repo-codex-main
 | `orche type` | Type text into the session without submitting it. | `--session`, `--text` |
 | `orche keys` | Send one or more key presses to the session. | `--session`, `--key` |
 | `orche cancel` | Send `Ctrl-C` to the active session. | `--session` |
+| `orche turn-summary` | Print the latest inferred turn summary for a session. | `--session` |
 | `orche close` | Kill the tmux window and remove local session metadata. | `--session` |
 
 For built-in help:
@@ -148,10 +156,16 @@ orche prompt --help
 
 `tmux-orche` follows the XDG Base Directory convention.
 
-Config file:
+Primary config file:
 
 ```text
 ~/.config/orche/config.json
+```
+
+Compatibility config file for existing notify hooks:
+
+```text
+~/config/orch.json
 ```
 
 State directory:
@@ -167,12 +181,14 @@ Typical state files include:
 - `locks/<session>.lock` for session coordination
 - `logs/orche.log` for runtime event logging
 
-The runtime config file stores fields such as:
+The runtime config stores fields such as:
 
 - active `session`
 - resolved `discord_session`
 - `codex_turn_complete_channel_id`
 - current `cwd`, `agent`, and `pane_id`
+
+Whenever `orche` updates its runtime config, it mirrors the data to `~/config/orch.json` so existing Codex notify hooks can keep working.
 
 ## Requirements
 
@@ -202,6 +218,102 @@ The workflow is intentionally simple:
 4. `type`, `keys`, `cancel`, and `close` let you continue steering the same session.
 
 This keeps the orchestration stateful without forcing the CLI itself to stay attached.
+
+## Notification Workflow
+
+`tmux-orche` does not implement its own Discord sender. It is designed to work with the existing Codex native notify pipeline and the mature hook script in `~/.codex/hooks/discord-turn-notify.sh`.
+
+### Architecture
+
+```text
+Codex native notify
+    |
+    v
+discord-turn-notify.sh
+    |
+    +--> reads ~/config/orch.json written by orche
+    |
+    +--> reads Codex JSON payload
+    |
+    +--> calls orche turn-summary when it needs a concise summary
+    |
+    v
+Discord
+```
+
+### What `orche` Provides
+
+- `orche session-new` writes the active session context to both:
+  - `~/.config/orche/config.json`
+  - `~/config/orch.json`
+- `orche turn-summary --session <name>` exposes the current turn-summary logic in a CLI-friendly way
+- `orche _turn-summary --session <name>` is also available as a hidden compatibility alias
+
+This keeps the design minimal:
+
+- Codex owns notify events
+- the existing shell hook owns Discord delivery
+- `orche` only provides session metadata and summary extraction
+
+### Codex Native Notify Setup
+
+In `~/.codex/config.toml`:
+
+```toml
+notify = ["/bin/bash", "/Users/dnq/.codex/hooks/discord-turn-notify.sh"]
+```
+
+That hook can then read `~/config/orch.json`, inspect the Codex payload, and post to Discord.
+
+### Using `orche` with the Existing Hook
+
+1. Start or reuse a session:
+
+```bash
+orche session-new \
+  --cwd /path/to/repo \
+  --agent codex \
+  --name repo-codex-main \
+  --discord-channel-id 123456789012345678
+```
+
+2. Send work:
+
+```bash
+orche prompt --session repo-codex-main --prompt "review the latest changes"
+```
+
+3. When Codex emits a native notify event, the hook reads:
+
+- `codex_turn_complete_channel_id`
+- `session`
+- `cwd`
+- `agent`
+- `pane_id`
+
+from `~/config/orch.json`.
+
+4. If the hook needs a short completion summary, it should call:
+
+```bash
+orche turn-summary --session repo-codex-main
+```
+
+### Hook Integration Note
+
+If your current hook still shells out to the old `orch.py _turn-summary`, update that call site to:
+
+```bash
+orche turn-summary --session "$session"
+```
+
+or, if you want minimal behavior change:
+
+```bash
+orche _turn-summary --session "$session"
+```
+
+The rest of the notification design can stay exactly as it is.
 
 ## License
 
