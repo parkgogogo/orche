@@ -19,6 +19,20 @@ The pattern is:
 
 This fire-and-forget model is the core value of `tmux-orche`: it lets OpenClaw hand off long-running Codex work while keeping OpenClaw's own token usage low.
 
+## Codex Config Limitation
+
+Codex does not support selecting an arbitrary config file path with a CLI flag.
+
+In practice:
+
+- `codex -c ...` overrides individual config values
+- it does not mean "load this config.toml file"
+- Codex uses its standard config locations such as `~/.codex/config.toml` or project-local `.codex/config.toml`
+
+For multi-session or multi-channel setups, the practical workaround is `CODEX_HOME`.
+
+`tmux-orche` supports this with `--codex-home`, so each session can launch Codex with a different config directory.
+
 ## Primary Use Case
 
 The intended production workflow looks like this:
@@ -195,6 +209,16 @@ orche session-new \
   --discord-channel-id 123456789012345678
 ```
 
+Create a session with an isolated `CODEX_HOME`:
+
+```bash
+orche session-new \
+  --cwd /path/to/repo \
+  --agent codex \
+  --name repo-codex-main \
+  --codex-home ~/.codex-orche-repo-codex-main
+```
+
 Send a prompt into an existing session:
 
 ```bash
@@ -252,7 +276,7 @@ orche close --session repo-codex-main
 | `orche config get` | Read a supported runtime config value. | `<key>` |
 | `orche config set` | Write a supported runtime config value. | `<key>`, `<value>` |
 | `orche config list` | List supported runtime config values. | None |
-| `orche session-new` | Create or reuse a persistent Codex session. | `--cwd`, `--agent`, `--name`, `--discord-channel-id` |
+| `orche session-new` | Create or reuse a persistent Codex session. | `--cwd`, `--agent`, `--name`, `--codex-home`, `--discord-channel-id` |
 | `orche prompt` | Send a fire-and-forget prompt to an existing session. | `--session`, `--prompt` |
 | `orche status` | Show resolved pane, cwd, running state, and session metadata. | `--session` |
 | `orche read` | Read recent pane output through `tmux-bridge`. | `--session`, `--lines` |
@@ -298,6 +322,7 @@ The runtime config stores fields such as:
 - active `session`
 - resolved `discord_session`
 - `codex_turn_complete_channel_id`
+- `codex_home`
 - current `cwd`, `agent`, and `pane_id`
 
 Notification hooks and helper scripts should read `~/.config/orche/config.json` or use `orche config get ...`.
@@ -318,6 +343,43 @@ Supported config keys:
 - `discord.channel-id`
 - `discord.webhook-url`
 - `notify.enabled`
+
+## Multi-Session Codex Configuration
+
+If you need multiple concurrent Codex instances with different notify hooks or different Codex configs, use `--codex-home`.
+
+Example:
+
+```bash
+orche session-new \
+  --cwd /path/to/repo-a \
+  --agent codex \
+  --name channel-a \
+  --codex-home ~/.codex-orche-channel-a \
+  --discord-channel-id 111111111111111111
+
+orche session-new \
+  --cwd /path/to/repo-b \
+  --agent codex \
+  --name channel-b \
+  --codex-home ~/.codex-orche-channel-b \
+  --discord-channel-id 222222222222222222
+```
+
+This allows:
+
+- one `CODEX_HOME` per session
+- one `config.toml` per session
+- different notify settings per session
+- different Codex history/session state per session
+
+Tradeoffs:
+
+- each session needs its own `CODEX_HOME` directory
+- configuration becomes distributed across multiple directories
+- you are responsible for preparing the `config.toml` and any required Codex state inside that directory
+
+`tmux-orche` only injects `CODEX_HOME` before launching Codex. It does not manage or synchronize the contents of those directories.
 
 ## Notification Workflow
 

@@ -155,6 +155,12 @@ def repo_name(cwd: Path) -> str:
     return slugify(cwd.resolve().name)
 
 
+def normalize_codex_home(codex_home: Optional[Union[Path, str]]) -> str:
+    if codex_home in (None, ""):
+        return ""
+    return str(Path(str(codex_home)).expanduser().resolve())
+
+
 def default_session_name(cwd: Path, agent: str, purpose: str = "main") -> str:
     return f"{repo_name(cwd)}-{slugify(agent)}-{slugify(purpose)}"
 
@@ -370,6 +376,7 @@ def load_config() -> Dict[str, Any]:
         "notify_enabled": True,
         "session": "",
         "discord_session": "",
+        "codex_home": "",
     }
     path = config_path()
     if not path.exists():
@@ -459,6 +466,7 @@ def update_runtime_config(
     cwd: Path,
     agent: str,
     pane_id: str,
+    codex_home: Optional[str] = None,
     discord_channel_id: Optional[str] = None,
     discord_session: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -478,6 +486,7 @@ def update_runtime_config(
     config["cwd"] = str(cwd)
     config["agent"] = agent
     config["pane_id"] = pane_id
+    config["codex_home"] = normalize_codex_home(codex_home)
     config["updated_at"] = time.time()
     save_config(config)
     return config
@@ -658,11 +667,17 @@ def is_codex_running(pane_id: str) -> bool:
     return False
 
 
-def build_codex_command(cwd: Path, *, approve_all: bool) -> str:
+def build_codex_command(cwd: Path, *, approve_all: bool, codex_home: Optional[str] = None) -> str:
     _ = approve_all
+    prefix: List[str] = [f"cd {shlex.quote(str(cwd))}"]
+    normalized_codex_home = normalize_codex_home(codex_home)
+    if normalized_codex_home:
+        prefix.append(f"mkdir -p {shlex.quote(normalized_codex_home)}")
+        prefix.append(f"export CODEX_HOME={shlex.quote(normalized_codex_home)}")
     command = ["codex", "--no-alt-screen", "-C", str(cwd)]
     command.append("--dangerously-bypass-approvals-and-sandbox")
-    return f"cd {shlex.quote(str(cwd))} && exec {' '.join(shlex.quote(part) for part in command)}"
+    prefix.append(f"exec {' '.join(shlex.quote(part) for part in command)}")
+    return " && ".join(prefix)
 
 
 def capture_has_ready_surface(capture: str, cwd: Path) -> bool:
@@ -688,7 +703,14 @@ def wait_for_codex_ready(pane_id: str, cwd: Path, *, timeout: float = STARTUP_TI
     raise OrcheError(f"Timed out waiting for Codex to become ready in {pane_id}")
 
 
-def ensure_codex_running(session: str, cwd: Path, pane_id: str, *, approve_all: bool = False) -> str:
+def ensure_codex_running(
+    session: str,
+    cwd: Path,
+    pane_id: str,
+    *,
+    approve_all: bool = False,
+    codex_home: Optional[str] = None,
+) -> str:
     if is_codex_running(pane_id):
         return pane_id
     approve_all = True
@@ -700,7 +722,15 @@ def ensure_codex_running(session: str, cwd: Path, pane_id: str, *, approve_all: 
     else:
         tmux("send-keys", "-t", pane_id, "C-c", check=False, capture=True)
         time.sleep(0.2)
-    tmux("send-keys", "-t", pane_id, "-l", build_codex_command(cwd, approve_all=approve_all), check=True, capture=True)
+    tmux(
+        "send-keys",
+        "-t",
+        pane_id,
+        "-l",
+        build_codex_command(cwd, approve_all=approve_all, codex_home=codex_home),
+        check=True,
+        capture=True,
+    )
     tmux("send-keys", "-t", pane_id, "Enter", check=True, capture=True)
     pane_id = wait_for_codex_ready(pane_id, cwd)
     bridge_name_pane(pane_id, session)
@@ -711,6 +741,7 @@ def ensure_codex_running(session: str, cwd: Path, pane_id: str, *, approve_all: 
             "session": session,
             "cwd": str(cwd),
             "pane_id": pane_id,
+            "codex_home": normalize_codex_home(codex_home),
             "codex_started_at": time.time(),
             "codex_approve_all": approve_all,
             "last_seen_at": time.time(),
@@ -741,11 +772,26 @@ def ensure_session(
     agent: str,
     *,
     approve_all: bool = False,
+    codex_home: Optional[str] = None,
     discord_channel_id: Optional[str] = None,
     discord_session: Optional[str] = None,
 ) -> str:
+    existing_meta = load_meta(session)
+    resolved_codex_home = normalize_codex_home(codex_home or str(existing_meta.get("codex_home") or ""))
+    existing_codex_home = normalize_codex_home(str(existing_meta.get("codex_home") or ""))
+    if existing_codex_home and resolved_codex_home and existing_codex_home != resolved_codex_home:
+        raise OrcheError(
+            f"Session {session} is already bound to codex_home={existing_codex_home}. "
+            "Use the same --codex-home or close the session and create a new one."
+        )
     pane_id = ensure_pane(session, cwd, agent)
-    pane_id = ensure_codex_running(session, cwd, pane_id, approve_all=approve_all)
+    pane_id = ensure_codex_running(
+        session,
+        cwd,
+        pane_id,
+        approve_all=approve_all,
+        codex_home=resolved_codex_home,
+    )
     meta = load_meta(session)
     meta.update(
         {
@@ -754,6 +800,7 @@ def ensure_session(
             "cwd": str(cwd),
             "agent": agent,
             "pane_id": pane_id,
+            "codex_home": resolved_codex_home,
             "discord_session": discord_session or meta.get("discord_session") or "",
             "last_seen_at": time.time(),
         }
@@ -764,6 +811,7 @@ def ensure_session(
         cwd=cwd,
         agent=agent,
         pane_id=pane_id,
+        codex_home=resolved_codex_home,
         discord_channel_id=discord_channel_id,
         discord_session=discord_session,
     )
@@ -840,6 +888,7 @@ def build_status(session: str) -> Dict[str, Any]:
         "session": session,
         "cwd": cwd,
         "agent": agent,
+        "codex_home": str(meta.get("codex_home") or ""),
         "pane_id": pane_id or "-",
         "window_name": (info or {}).get("window_name", meta.get("window_name", "-")),
         "codex_running": bool(pane_id and is_codex_running(pane_id)),

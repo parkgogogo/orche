@@ -19,6 +19,20 @@
 
 这就是 `tmux-orche` 的核心价值：让 OpenClaw 可以把长时间运行的 Codex 任务异步交出去，同时显著降低 OpenClaw 自身的 token 消耗。
 
+## Codex 配置限制
+
+Codex 不支持通过 CLI 参数直接指定任意配置文件路径。
+
+实际行为是：
+
+- `codex -c ...` 用于覆盖单个配置项
+- 它并不表示“加载这个 config.toml 文件”
+- Codex 仍然使用标准配置位置，例如 `~/.codex/config.toml` 或项目内的 `.codex/config.toml`
+
+如果要支持多会话或多频道并发，实际可行的替代方案是 `CODEX_HOME`。
+
+`tmux-orche` 通过 `--codex-home` 支持这一点，因此每个会话都可以用不同的配置目录启动 Codex。
+
 ## 核心使用场景
 
 推荐的生产工作流如下：
@@ -195,6 +209,16 @@ orche session-new \
   --discord-channel-id 123456789012345678
 ```
 
+创建一个带独立 `CODEX_HOME` 的会话：
+
+```bash
+orche session-new \
+  --cwd /path/to/repo \
+  --agent codex \
+  --name repo-codex-main \
+  --codex-home ~/.codex-orche-repo-codex-main
+```
+
 向已有会话发送 prompt：
 
 ```bash
@@ -252,7 +276,7 @@ orche close --session repo-codex-main
 | `orche config get` | 读取支持的运行时配置值。 | `<key>` |
 | `orche config set` | 写入支持的运行时配置值。 | `<key>`, `<value>` |
 | `orche config list` | 列出支持的运行时配置值。 | None |
-| `orche session-new` | 创建或复用一个持久化 Codex 会话。 | `--cwd`, `--agent`, `--name`, `--discord-channel-id` |
+| `orche session-new` | 创建或复用一个持久化 Codex 会话。 | `--cwd`, `--agent`, `--name`, `--codex-home`, `--discord-channel-id` |
 | `orche prompt` | 向已有会话发送 fire-and-forget prompt。 | `--session`, `--prompt` |
 | `orche status` | 显示 pane、cwd、运行状态和会话元数据。 | `--session` |
 | `orche read` | 通过 `tmux-bridge` 读取最近的 pane 输出。 | `--session`, `--lines` |
@@ -298,6 +322,7 @@ orche prompt --help
 - 当前活动 `session`
 - 已解析的 `discord_session`
 - `codex_turn_complete_channel_id`
+- `codex_home`
 - 当前 `cwd`、`agent` 和 `pane_id`
 
 通知 hook 和辅助脚本应读取 `~/.config/orche/config.json`，或直接使用 `orche config get ...`。
@@ -318,6 +343,43 @@ orche config list
 - `discord.channel-id`
 - `discord.webhook-url`
 - `notify.enabled`
+
+## 多会话 Codex 配置
+
+如果你需要多个并发 Codex 实例，并且它们使用不同的 notify hook 或不同的 Codex 配置，可以使用 `--codex-home`。
+
+示例：
+
+```bash
+orche session-new \
+  --cwd /path/to/repo-a \
+  --agent codex \
+  --name channel-a \
+  --codex-home ~/.codex-orche-channel-a \
+  --discord-channel-id 111111111111111111
+
+orche session-new \
+  --cwd /path/to/repo-b \
+  --agent codex \
+  --name channel-b \
+  --codex-home ~/.codex-orche-channel-b \
+  --discord-channel-id 222222222222222222
+```
+
+这样可以实现：
+
+- 每个会话一个 `CODEX_HOME`
+- 每个会话一个独立的 `config.toml`
+- 每个会话独立的 notify 配置
+- 每个会话独立的 Codex 历史记录和状态
+
+代价是：
+
+- 每个会话都需要单独的 `CODEX_HOME` 目录
+- 配置会分散到多个目录
+- 你需要自己准备该目录中的 `config.toml` 和所需的 Codex 状态
+
+`tmux-orche` 只负责在启动 Codex 前注入 `CODEX_HOME`，不会自动管理或同步这些目录的内容。
 
 ## 通知工作流
 

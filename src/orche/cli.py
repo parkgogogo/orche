@@ -75,6 +75,9 @@ def _render_status(info: dict) -> None:
     body.append("yes\n" if info.get("pane_exists") else "no\n")
     body.append("CWD: ", style="bold cyan")
     body.append(f"{info.get('cwd', '-')}")
+    if info.get("codex_home"):
+        body.append("\nCODEX_HOME: ", style="bold cyan")
+        body.append(str(info["codex_home"]))
     if info.get("discord_session"):
         body.append("\nDiscord session: ", style="bold cyan")
         body.append(str(info["discord_session"]))
@@ -136,6 +139,7 @@ def session_new(
     cwd: Path = typer.Option(..., exists=True, file_okay=False, dir_okay=True, resolve_path=True, help="Working directory for the Codex session."),
     agent: str = typer.Option(..., help="Agent name. Currently only 'codex' is supported."),
     name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-<agent>-main."),
+    codex_home: Optional[Path] = typer.Option(None, "--codex-home", resolve_path=True, help="Optional CODEX_HOME directory for this Codex session."),
     discord_channel_id: Optional[str] = typer.Option(None, "--discord-channel-id", help="Numeric Discord channel ID to send completion notifications back to."),
 ) -> None:
     try:
@@ -146,6 +150,7 @@ def session_new(
             session,
             cwd.resolve(),
             agent,
+            codex_home=None if codex_home is None else str(codex_home),
             discord_channel_id=discord_channel_id,
         )
         append_action_history(session, cwd.resolve(), agent, "session-new", pane_id=pane_id)
