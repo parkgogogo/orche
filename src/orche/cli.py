@@ -136,7 +136,7 @@ def session_new(
     cwd: Path = typer.Option(..., exists=True, file_okay=False, dir_okay=True, resolve_path=True, help="Working directory for the Codex session."),
     agent: str = typer.Option(..., help="Agent name. Currently only 'codex' is supported."),
     name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-<agent>-main."),
-    discord_channel_id: Optional[str] = typer.Option(None, "--discord-channel-id", help="Numeric Discord channel ID for notifications."),
+    discord_channel_id: Optional[str] = typer.Option(None, "--discord-channel-id", help="Numeric Discord channel ID to send completion notifications back to."),
 ) -> None:
     try:
         if agent != "codex":
