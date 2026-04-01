@@ -2,18 +2,130 @@
 
 [中文](README.zh.md)
 
-Modern tmux-backed Codex orchestration for persistent CLI sessions.
+tmux-backed Codex orchestration for OpenClaw and other fire-and-forget workflows.
 
-`tmux-orche` turns a one-off `orch.py` script into an installable Python CLI with a clean command surface, XDG-based configuration, and a reusable tmux + `tmux-bridge` backend for long-lived Codex orchestration sessions.
+## Overview
 
-## Features
+`tmux-orche` is primarily designed to solve one practical problem: OpenClaw needs to hand work off to Codex without staying attached to the full conversation until Codex finishes.
 
-- Installable `orche` command built with Typer + Rich
-- Persistent tmux sessions instead of one-shot subprocess execution
-- Fire-and-forget prompt submission with later inspection via the same session
-- XDG-compliant config and state paths
-- Compatible with the existing tmux + `tmux-bridge` orchestration model
-- Works with Codex native notify hooks through XDG config at `~/.config/orche/config.json`
+The pattern is:
+
+1. OpenClaw receives a user request.
+2. OpenClaw calls `orche` to create or reuse a persistent tmux session that runs Codex.
+3. `orche` returns immediately.
+4. OpenClaw stops waiting, so it does not keep burning tokens while Codex works.
+5. Codex continues in the background inside tmux.
+6. When the task completes, a notify hook posts the result back to Discord.
+
+This fire-and-forget model is the core value of `tmux-orche`: it lets OpenClaw hand off long-running Codex work while keeping OpenClaw's own token usage low.
+
+## Primary Use Case
+
+The intended production workflow looks like this:
+
+1. A user sends a task in a Discord server and mentions `@OpenClaw`.
+2. OpenClaw reads the message in the main chat channel.
+3. OpenClaw calls `orche session-new` and `orche prompt`.
+4. `orche` returns immediately, and OpenClaw ends the turn.
+5. Codex keeps running in a persistent tmux session in the background.
+6. A notify hook sends a completion message to a Discord notify channel.
+7. The user sees the notification and can continue the conversation.
+
+This is why tmux persistence matters: the Codex process survives after OpenClaw has already returned control to Discord.
+
+## Prerequisites
+
+### Runtime Requirements
+
+`orche` depends on these tools:
+
+- `tmux`
+- `tmux-bridge`
+- `codex` CLI
+- Python `3.9+`
+
+### Discord Environment
+
+The core OpenClaw + Codex workflow assumes a Discord server with:
+
+- one Discord Guild
+- one main channel such as `#coding`, where OpenClaw listens for user messages
+- one notify channel such as `#codex-notify`, where Codex completion messages are posted
+
+It also assumes two Discord bots:
+
+- `OpenClaw Bot`: receives user messages in the main channel and calls `orche`
+- `Codex Notify Bot`: posts completion notifications after Codex finishes
+
+### OpenClaw Configuration
+
+An OpenClaw deployment typically enables Discord in `~/.openclaw/openclaw.json`.
+
+Relevant fields include:
+
+- `channels.discord.enabled: true`
+- `channels.discord.token`: OpenClaw Bot Token
+- `channels.discord.guilds`: allowed guild and user configuration
+
+Example:
+
+```json
+{
+  "channels": {
+    "discord": {
+      "enabled": true,
+      "token": "YOUR_OPENCLAW_BOT_TOKEN",
+      "guilds": {
+        "123456789012345678": {
+          "enabled": true,
+          "allowed_users": ["234567890123456789"]
+        }
+      }
+    }
+  }
+}
+```
+
+## Architecture
+
+```text
+Discord user
+    |
+    v
+@OpenClaw in main channel (#coding)
+    |
+    v
+OpenClaw Bot
+    |
+    +--> orche session-new
+    |
+    +--> orche prompt
+    |
+    v
+OpenClaw returns immediately
+    |
+    v
+Persistent tmux session
+    |
+    v
+Codex runs in background
+    |
+    v
+notify hook
+    |
+    v
+Codex Notify Bot -> Discord notify channel (#codex-notify)
+```
+
+### End-to-End Flow
+
+1. User mentions `@OpenClaw` with a coding task.
+2. OpenClaw validates the Discord message and allowed guild/user context.
+3. OpenClaw starts or reuses a Codex tmux session through `orche`.
+4. OpenClaw sends the task to Codex and exits immediately.
+5. Codex works asynchronously in tmux.
+6. A notify hook posts the result to the notify channel.
+7. The user receives the completion signal without OpenClaw holding the entire session open.
 
 ## Installation
 
@@ -72,7 +184,7 @@ Create or reuse a persistent Codex session:
 orche session-new --cwd /path/to/repo --agent codex
 ```
 
-Create a named session and bind a Discord channel for native Codex notify hooks:
+Create a named session and bind a Discord channel for notify hooks:
 
 ```bash
 orche session-new \
@@ -206,70 +318,22 @@ Supported config keys:
 - `discord.webhook-url`
 - `notify.enabled`
 
-## Requirements
-
-`orche` depends on these external tools being installed and available:
-
-- `tmux`
-- `tmux-bridge`
-- `codex` CLI
-
-Python requirements:
-
-- Python `3.9+`
-
-The backend expects:
-
-- tmux can create and manage persistent windows
-- `tmux-bridge` can resolve, read, type, and send keys to panes
-- `codex` can be launched inside tmux with `--no-alt-screen`
-
-## Backend Model
-
-The workflow is intentionally simple:
-
-1. `session-new` creates or reuses a named tmux-backed Codex session.
-2. `prompt` submits work into that existing session and returns immediately.
-3. `status` and `read` inspect the live session later.
-4. `type`, `keys`, `cancel`, and `close` let you continue steering the same session.
-
-This keeps the orchestration stateful without forcing the CLI itself to stay attached.
-
 ## Notification Workflow
 
 `tmux-orche` is designed to work with the existing Codex native notify pipeline. This repository also includes a local hook variant at [`scripts/notify-discord.sh`](./scripts/notify-discord.sh), adapted from the mature `discord-turn-notify.sh` design without modifying the original script in `~/.codex/hooks/`.
 
-### Architecture
-
-```text
-Codex native notify
-    |
-    v
-discord-turn-notify.sh
-    |
-    +--> reads ~/.config/orche/config.json written by orche
-    |
-    +--> reads Codex JSON payload
-    |
-    +--> calls orche turn-summary when it needs a concise summary
-    |
-    v
-Discord
-```
-
 ### What `orche` Provides
 
-- `orche session-new` writes the active session context to both:
-  - `~/.config/orche/config.json`
+- `orche session-new` writes the active session context to `~/.config/orche/config.json`
 - `orche turn-summary --session <name>` exposes the current turn-summary logic in a CLI-friendly way
 - `orche _turn-summary --session <name>` is also available as a hidden compatibility alias
 - `orche config get/set/list` provides a stable interface for notification secrets and channel settings
 
-This keeps the design minimal:
+This keeps the responsibility split cleanly:
 
-- Codex owns notify events
-- the existing shell hook owns Discord delivery
-- `orche` only provides session metadata and summary extraction
+- Codex emits notify events
+- the hook handles external delivery
+- `orche` provides session metadata and summary extraction
 
 ### Codex Native Notify Setup
 
@@ -339,12 +403,6 @@ summary="$(orche turn-summary --session "$session" 2>/dev/null || true)"
 channel_id="$(orche config get discord.channel-id)"
 bot_token="${DISCORD_BOT_TOKEN:-$(orche config get discord.bot-token)}"
 ```
-
-This keeps the responsibility split cleanly:
-
-- Codex emits notify events
-- the hook handles external delivery
-- `orche` provides session metadata and summary extraction
 
 ### Using `orche` with the Existing Hook
 

@@ -2,18 +2,130 @@
 
 [English](README.md)
 
-面向持久化 CLI 会话的现代化 tmux 后端 Codex 编排工具。
+面向 OpenClaw 与其他 fire-and-forget 工作流的 tmux 后端 Codex 编排工具。
 
-`tmux-orche` 将一次性的 `orch.py` 脚本演进为可安装的 Python CLI，提供清晰的命令界面、基于 XDG 的配置方式，以及可复用的 tmux + `tmux-bridge` 后端，用于长期运行的 Codex 编排会话。
+## 概览
 
-## 特性
+`tmux-orche` 主要解决一个非常实际的问题：OpenClaw 需要把任务交给 Codex 处理，但不希望一直挂在完整对话上等待 Codex 完成。
 
-- 基于 Typer + Rich 构建，可直接安装并使用 `orche` 命令
-- 使用持久化 tmux 会话，而不是一次性的子进程执行
-- 支持 fire-and-forget 的 prompt 提交，并可在之后继续检查同一会话
-- 使用符合 XDG 规范的配置与状态路径
-- 兼容现有 tmux + `tmux-bridge` 编排模型
-- 可通过 XDG 配置 `~/.config/orche/config.json` 与 Codex 原生 notify hook 配合工作
+基本模式如下：
+
+1. OpenClaw 接收到用户请求。
+2. OpenClaw 调用 `orche` 创建或复用一个运行 Codex 的持久化 tmux 会话。
+3. `orche` 立即返回。
+4. OpenClaw 不再继续等待，因此不会在 Codex 工作期间持续消耗 token。
+5. Codex 在后台 tmux 会话中继续工作。
+6. 任务完成后，由 notify hook 将结果发送回 Discord。
+
+这就是 `tmux-orche` 的核心价值：让 OpenClaw 可以把长时间运行的 Codex 任务异步交出去，同时显著降低 OpenClaw 自身的 token 消耗。
+
+## 核心使用场景
+
+推荐的生产工作流如下：
+
+1. 用户在 Discord 服务器中发送任务，并 `@OpenClaw`。
+2. OpenClaw 在主聊天频道中读取消息。
+3. OpenClaw 调用 `orche session-new` 和 `orche prompt`。
+4. `orche` 立即返回，OpenClaw 当前回合结束。
+5. Codex 在后台持久化 tmux 会话中继续运行。
+6. notify hook 将完成消息发送到 Discord 通知频道。
+7. 用户收到通知后，可以继续对话。
+
+tmux 持久化在这里很关键：即使 OpenClaw 已经返回，Codex 进程仍会继续存活并运行。
+
+## 前置条件
+
+### 运行依赖
+
+`orche` 依赖以下工具：
+
+- `tmux`
+- `tmux-bridge`
+- `codex` CLI
+- Python `3.9+`
+
+### Discord 环境
+
+核心的 OpenClaw + Codex 工作流默认假设你有一个 Discord 服务器，至少包含：
+
+- 一个 Discord Guild
+- 一个主频道，例如 `#coding`，由 OpenClaw 监听用户消息
+- 一个通知频道，例如 `#codex-notify`，用于接收 Codex 完成后的通知
+
+同时需要两个 Discord Bot：
+
+- `OpenClaw Bot`：在主频道接收用户消息并调用 `orche`
+- `Codex Notify Bot`：在 Codex 完成后发送通知消息
+
+### OpenClaw 配置
+
+典型的 OpenClaw 部署会在 `~/.openclaw/openclaw.json` 中启用 Discord。
+
+相关字段通常包括：
+
+- `channels.discord.enabled: true`
+- `channels.discord.token`：OpenClaw Bot Token
+- `channels.discord.guilds`：允许访问的 Guild 和 User 配置
+
+示例：
+
+```json
+{
+  "channels": {
+    "discord": {
+      "enabled": true,
+      "token": "YOUR_OPENCLAW_BOT_TOKEN",
+      "guilds": {
+        "123456789012345678": {
+          "enabled": true,
+          "allowed_users": ["234567890123456789"]
+        }
+      }
+    }
+  }
+}
+```
+
+## 架构
+
+```text
+Discord user
+    |
+    v
+@OpenClaw in main channel (#coding)
+    |
+    v
+OpenClaw Bot
+    |
+    +--> orche session-new
+    |
+    +--> orche prompt
+    |
+    v
+OpenClaw returns immediately
+    |
+    v
+Persistent tmux session
+    |
+    v
+Codex runs in background
+    |
+    v
+notify hook
+    |
+    v
+Codex Notify Bot -> Discord notify channel (#codex-notify)
+```
+
+### 端到端流程
+
+1. 用户通过 `@OpenClaw` 提交编码任务。
+2. OpenClaw 验证 Discord 消息和允许的 guild/user 上下文。
+3. OpenClaw 通过 `orche` 启动或复用一个 Codex tmux 会话。
+4. OpenClaw 将任务发送给 Codex，并立即结束当前回合。
+5. Codex 在 tmux 中异步工作。
+6. notify hook 将结果发送到通知频道。
+7. 用户收到完成信号，而 OpenClaw 不需要一直保持整段会话开启。
 
 ## 安装
 
@@ -72,7 +184,7 @@ pip install .
 orche session-new --cwd /path/to/repo --agent codex
 ```
 
-创建一个命名会话，并为 Codex 原生 notify hook 绑定 Discord 频道：
+创建一个命名会话，并为 notify hook 绑定 Discord 频道：
 
 ```bash
 orche session-new \
@@ -206,70 +318,22 @@ orche config list
 - `discord.webhook-url`
 - `notify.enabled`
 
-## 依赖要求
-
-`orche` 依赖以下外部工具，并要求它们已安装且可执行：
-
-- `tmux`
-- `tmux-bridge`
-- `codex` CLI
-
-Python 要求：
-
-- Python `3.9+`
-
-后端默认假设：
-
-- tmux 可以创建并管理持久化窗口
-- `tmux-bridge` 可以解析、读取、输入和发送按键到 pane
-- `codex` 可以在 tmux 中以 `--no-alt-screen` 方式启动
-
-## 后端模型
-
-整体工作流有意保持简洁：
-
-1. `session-new` 创建或复用一个命名的 tmux 后端 Codex 会话。
-2. `prompt` 将工作提交到已有会话并立即返回。
-3. `status` 和 `read` 在之后检查实时会话状态。
-4. `type`、`keys`、`cancel` 和 `close` 用于继续控制同一个会话。
-
-这样可以保持编排的有状态特性，而不要求 CLI 本身持续附着在会话上。
-
 ## 通知工作流
 
 `tmux-orche` 的设计目标是与现有的 Codex 原生 notify 管线配合工作。仓库中还包含一个本地 hook 变体 [`scripts/notify-discord.sh`](./scripts/notify-discord.sh)，它基于成熟的 `discord-turn-notify.sh` 设计改造而来，但不会修改 `~/.codex/hooks/` 下的原始脚本。
 
-### 架构
-
-```text
-Codex native notify
-    |
-    v
-discord-turn-notify.sh
-    |
-    +--> reads ~/.config/orche/config.json written by orche
-    |
-    +--> reads Codex JSON payload
-    |
-    +--> calls orche turn-summary when it needs a concise summary
-    |
-    v
-Discord
-```
-
 ### `orche` 提供的能力
 
-- `orche session-new` 会把活动会话上下文写入：
-  - `~/.config/orche/config.json`
+- `orche session-new` 会把活动会话上下文写入 `~/.config/orche/config.json`
 - `orche turn-summary --session <name>` 以 CLI 形式暴露当前的 turn 摘要逻辑
 - `orche _turn-summary --session <name>` 也保留为隐藏兼容别名
 - `orche config get/set/list` 为通知密钥和频道设置提供稳定接口
 
-这让整体设计保持简洁：
+这样职责划分会更清晰：
 
 - Codex 负责发出 notify 事件
-- 现有 shell hook 负责 Discord 投递
-- `orche` 仅负责提供会话元数据和摘要提取能力
+- hook 负责对外投递
+- `orche` 负责提供会话元数据和摘要提取能力
 
 ### Codex 原生 Notify 配置
 
@@ -339,12 +403,6 @@ summary="$(orche turn-summary --session "$session" 2>/dev/null || true)"
 channel_id="$(orche config get discord.channel-id)"
 bot_token="${DISCORD_BOT_TOKEN:-$(orche config get discord.bot-token)}"
 ```
-
-这样职责边界会非常清晰：
-
-- Codex 负责发出 notify 事件
-- hook 负责对外投递
-- `orche` 负责提供会话元数据和摘要提取能力
 
 ### 使用 `orche` 配合现有 Hook
 
