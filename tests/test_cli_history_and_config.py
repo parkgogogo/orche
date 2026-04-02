@@ -47,6 +47,71 @@ def test_history_command_shows_empty_message(xdg_runtime):
     assert "No history yet" in result.stdout
 
 
+def test_backend_list_sessions_returns_sorted_metadata(xdg_runtime):
+    backend.save_meta(
+        "zeta-session",
+        {
+            "session": "zeta-session",
+            "cwd": "/tmp/zeta",
+            "agent": "codex",
+            "pane_id": "%2",
+        },
+    )
+    backend.save_meta(
+        "alpha-session",
+        {
+            "session": "alpha-session",
+            "cwd": "/tmp/alpha",
+            "agent": "codex",
+            "pane_id": "%1",
+        },
+    )
+
+    sessions = backend.list_sessions()
+
+    assert [entry["session"] for entry in sessions] == ["alpha-session", "zeta-session"]
+    assert sessions[0]["cwd"] == "/tmp/alpha"
+
+
+def test_sessions_list_command_shows_sessions(xdg_runtime):
+    backend.save_meta(
+        "demo-session",
+        {
+            "session": "demo-session",
+            "cwd": "/repo/demo",
+            "agent": "codex",
+            "pane_id": "%1",
+        },
+    )
+
+    result = CliRunner().invoke(app, ["sessions", "list"])
+
+    assert result.exit_code == 0
+    assert "demo-session" in result.stdout
+    assert "/repo/demo" in result.stdout
+
+
+def test_sessions_clearall_command_closes_all_sessions(xdg_runtime, monkeypatch):
+    runner = CliRunner()
+    closed = []
+
+    monkeypatch.setattr(
+        cli,
+        "list_sessions",
+        lambda: [
+            {"session": "alpha-session"},
+            {"session": "beta-session"},
+        ],
+    )
+    monkeypatch.setattr(cli, "close_session", lambda session: closed.append(session) or "-")
+
+    result = runner.invoke(app, ["sessions", "clearall"])
+
+    assert result.exit_code == 0
+    assert closed == ["alpha-session", "beta-session"]
+    assert "Cleared 2 session(s)" in result.stdout
+
+
 def test_config_supports_discord_mention_user_id(xdg_runtime):
     runner = CliRunner()
 

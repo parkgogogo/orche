@@ -86,6 +86,10 @@ pip install .
   读取该 live session 的最近终端输出。
 - `orche history --session repo-codex-main --limit 20`
   查看该会话最近的本地控制动作。
+- `orche sessions list`
+  查看本地元数据中记录的全部会话。
+- `orche sessions clearall`
+  关闭并移除全部已记录会话。
 - `orche close --session repo-codex-main`
   在任务完成后关闭会话。
 - `orche config list`

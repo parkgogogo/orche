@@ -90,6 +90,10 @@ pip install .
   Send one or more key presses to the live Codex session.
 - `orche history --session repo-codex-main --limit 20`
   Show recent local control actions for that session.
+- `orche sessions list`
+  Show stored sessions from local metadata.
+- `orche sessions clearall`
+  Close and remove all stored sessions.
 - `orche close --session repo-codex-main`
   Close the session when the work is finished.
 - `orche config list`

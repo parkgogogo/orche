@@ -489,6 +489,25 @@ def load_history_entries(session: str) -> List[Dict[str, Any]]:
     return entries
 
 
+def list_sessions() -> List[Dict[str, Any]]:
+    ensure_directories()
+    sessions: List[Dict[str, Any]] = []
+    for path in sorted(meta_dir().glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        session = str(payload.get("session") or path.stem).strip()
+        if not session:
+            continue
+        payload["session"] = session
+        sessions.append(payload)
+    sessions.sort(key=lambda item: str(item.get("session") or ""))
+    return sessions
+
+
 def load_config() -> Dict[str, Any]:
     ensure_directories()
     default = {

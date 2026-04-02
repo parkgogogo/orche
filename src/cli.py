@@ -29,6 +29,7 @@ from backend import (
     get_config_value,
     load_config,
     load_history_entries,
+    list_sessions,
     list_config_values,
     latest_turn_summary,
     log_event,
@@ -49,7 +50,9 @@ app = typer.Typer(
     add_completion=False,
 )
 config_app = typer.Typer(help="Manage orche runtime configuration.")
+sessions_app = typer.Typer(help="Manage stored sessions.")
 app.add_typer(config_app, name="config")
+app.add_typer(sessions_app, name="sessions")
 console = Console()
 stderr = Console(stderr=True)
 
@@ -502,6 +505,43 @@ def history(
         if details:
             line += f"\t{details}"
         console.print(line)
+
+
+@sessions_app.command("list")
+def sessions_list() -> None:
+    sessions = list_sessions()
+    if not sessions:
+        console.print("No sessions found")
+        return
+    table = Table(title="orche sessions")
+    table.add_column("Session", style="cyan")
+    table.add_column("Agent", style="white")
+    table.add_column("CWD", style="white")
+    table.add_column("Pane", style="white")
+    for entry in sessions:
+        table.add_row(
+            str(entry.get("session") or "-"),
+            str(entry.get("agent") or "-"),
+            str(entry.get("cwd") or "-"),
+            str(entry.get("pane_id") or "-"),
+        )
+    console.print(table)
+
+
+@sessions_app.command("clearall")
+def sessions_clearall() -> None:
+    sessions = list_sessions()
+    if not sessions:
+        console.print("No sessions found")
+        return
+    cleared = 0
+    for entry in sessions:
+        session = str(entry.get("session") or "").strip()
+        if not session:
+            continue
+        close_session(session)
+        cleared += 1
+    console.print(f"Cleared {cleared} session(s)")
 
 
 def main() -> int:
