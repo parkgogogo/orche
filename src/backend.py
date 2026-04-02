@@ -14,6 +14,14 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover
+    try:
+        import tomli as tomllib
+    except ModuleNotFoundError:  # pragma: no cover
+        tomllib = None
+
 from notify_hook import NOTIFY_DISCORD_SH
 from paths import config_path, ensure_directories, history_dir, locks_dir, meta_dir, orch_log_path
 
@@ -42,6 +50,10 @@ MANAGED_CODEX_RUNTIME_DIRS = {".tmp", "log", "shell_snapshots", "tmp"}
 MANAGED_CODEX_RUNTIME_FILE_GLOBS = ("history.jsonl", "logs_*.sqlite*", "state_*.sqlite*")
 TOML_TABLE_HEADER_RE = re.compile(r"^\s*\[\[?.*\]\]?\s*$")
 TOML_NOTIFY_KEY_RE = re.compile(r"^\s*notify\s*=")
+TOML_PROJECT_HEADER_RE = re.compile(r"^\s*\[projects\.(.+)\]\s*$")
+TOML_TRUST_LEVEL_RE = re.compile(r"^\s*trust_level\s*=")
+SOURCE_CONFIG_LOCK_NAME = "codex-source-config"
+SOURCE_CONFIG_BACKUP_SUFFIX = ".orche.bak"
 CONFIG_KEY_MAP = {
     "discord.bot-token": "discord_bot_token",
     "discord.channel-id": "discord_channel_id",
@@ -190,6 +202,14 @@ def default_notify_hook_path(codex_home: Path) -> Path:
     return codex_home / "hooks" / "discord-turn-notify.sh"
 
 
+def source_codex_config_path() -> Path:
+    return DEFAULT_CODEX_SOURCE_HOME / "config.toml"
+
+
+def source_codex_config_backup_path() -> Path:
+    return source_codex_config_path().with_name(source_codex_config_path().name + SOURCE_CONFIG_BACKUP_SUFFIX)
+
+
 def render_notify_command(hook_path: Path, *, session: str, discord_channel_id: Optional[str]) -> str:
     values = ["/bin/bash", str(hook_path), "--session", session]
     if discord_channel_id:
@@ -223,6 +243,77 @@ def strip_notify_assignments(lines: List[str]) -> List[str]:
     return cleaned
 
 
+def read_text_or_empty(path: Path) -> str:
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+def validate_toml_document(content: str, *, label: str) -> None:
+    if tomllib is None:
+        return
+    try:
+        tomllib.loads(content)
+    except tomllib.TOMLDecodeError as exc:
+        raise OrcheError(f"Refusing to write invalid TOML for {label}: {exc}") from exc
+
+
+def write_text_atomically(path: Path, content: str, *, backup_path: Optional[Path] = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temp_path.write_text(content, encoding="utf-8")
+    try:
+        if backup_path is not None and path.exists():
+            shutil.copy2(path, backup_path)
+        temp_path.replace(path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            temp_path.unlink()
+
+
+def _project_header_path(line: str) -> Optional[str]:
+    match = TOML_PROJECT_HEADER_RE.match(line)
+    if match is None:
+        return None
+    try:
+        value = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, str) else None
+
+
+def render_project_trust_block(cwd: Path) -> str:
+    return f"[projects.{json.dumps(str(cwd.resolve()))}]\ntrust_level = \"trusted\"\n"
+
+
+def upsert_project_trust(content: str, cwd: Path) -> str:
+    target = str(cwd.resolve())
+    lines = content.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if _project_header_path(line) != target:
+            continue
+        section_end = index + 1
+        while section_end < len(lines) and not TOML_TABLE_HEADER_RE.match(lines[section_end]):
+            section_end += 1
+        for trust_index in range(index + 1, section_end):
+            if not TOML_TRUST_LEVEL_RE.match(lines[trust_index]):
+                continue
+            replacement = 'trust_level = "trusted"\n'
+            if lines[trust_index] == replacement:
+                return content
+            lines[trust_index] = replacement
+            return "".join(lines)
+        lines.insert(section_end, 'trust_level = "trusted"\n')
+        return "".join(lines)
+    updated = content
+    if updated and not updated.endswith("\n"):
+        updated += "\n"
+    if updated.strip():
+        updated += "\n"
+    updated += render_project_trust_block(cwd)
+    return updated
+
+
 def upsert_top_level_notify(content: str, notify_line: str) -> str:
     lines = strip_notify_assignments(content.splitlines(keepends=True))
     first_table_index = next((index for index, line in enumerate(lines) if TOML_TABLE_HEADER_RE.match(line)), len(lines))
@@ -242,6 +333,45 @@ def upsert_top_level_notify(content: str, notify_line: str) -> str:
         updated.append("\n")
         updated.extend(suffix)
     return "".join(updated)
+
+
+@contextlib.contextmanager
+def source_config_lock(*, timeout: float = 5.0):
+    ensure_directories()
+    path = locks_dir() / f"{SOURCE_CONFIG_LOCK_NAME}.lock"
+    deadline = time.time() + timeout
+    while True:
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            if time.time() > deadline:
+                raise OrcheError("Timed out waiting for Codex source config lock")
+            time.sleep(0.1)
+    try:
+        os.write(fd, str(os.getpid()).encode())
+        yield
+    finally:
+        os.close(fd)
+        with contextlib.suppress(FileNotFoundError):
+            path.unlink()
+
+
+def sync_trust_to_source_config(cwd: Path) -> str:
+    config_path = source_codex_config_path()
+    with source_config_lock():
+        original = read_text_or_empty(config_path)
+        if original:
+            validate_toml_document(original, label=str(config_path))
+        updated = upsert_project_trust(original, cwd)
+        if updated != original:
+            validate_toml_document(updated, label=str(config_path))
+            write_text_atomically(
+                config_path,
+                updated,
+                backup_path=source_codex_config_backup_path(),
+            )
+        return updated
 
 
 def prune_managed_codex_home(codex_home: Path) -> None:
@@ -269,22 +399,26 @@ def remove_managed_codex_home(codex_home: str) -> None:
             time.sleep(0.1)
 
 
-def rewrite_codex_config(codex_home: Path, *, session: str, discord_channel_id: Optional[str]) -> None:
+def rewrite_codex_config(
+    codex_home: Path,
+    *,
+    session: str,
+    cwd: Path,
+    discord_channel_id: Optional[str],
+) -> None:
     config_toml_path = codex_home / "config.toml"
+    base_content = sync_trust_to_source_config(cwd)
     notify_line = render_notify_command(
         default_notify_hook_path(codex_home),
         session=session,
         discord_channel_id=discord_channel_id,
     )
-    if config_toml_path.exists():
-        content = config_toml_path.read_text(encoding="utf-8")
-    else:
-        content = ""
-    updated = upsert_top_level_notify(content, notify_line)
-    config_toml_path.write_text(updated, encoding="utf-8")
+    updated = upsert_top_level_notify(base_content, notify_line)
+    validate_toml_document(updated, label=str(config_toml_path))
+    write_text_atomically(config_toml_path, updated)
 
 
-def ensure_managed_codex_home(session: str, *, discord_channel_id: Optional[str]) -> Path:
+def ensure_managed_codex_home(session: str, *, cwd: Path, discord_channel_id: Optional[str]) -> Path:
     target = default_codex_home_path(session)
     if not target.exists():
         if DEFAULT_CODEX_SOURCE_HOME.exists():
@@ -293,7 +427,7 @@ def ensure_managed_codex_home(session: str, *, discord_channel_id: Optional[str]
             target.mkdir(parents=True, exist_ok=True)
     prune_managed_codex_home(target)
     write_notify_hook(default_notify_hook_path(target))
-    rewrite_codex_config(target, session=session, discord_channel_id=discord_channel_id)
+    rewrite_codex_config(target, session=session, cwd=cwd, discord_channel_id=discord_channel_id)
     return target.resolve()
 
 
@@ -962,10 +1096,22 @@ def ensure_session(
         resolved_codex_home = normalize_codex_home(str(existing_meta.get("codex_home") or ""))
         managed_codex_home = bool(existing_meta.get("codex_home_managed"))
     else:
-        resolved_codex_home = str(ensure_managed_codex_home(session, discord_channel_id=resolved_discord_channel_id))
+        resolved_codex_home = str(
+            ensure_managed_codex_home(
+                session,
+                cwd=cwd,
+                discord_channel_id=resolved_discord_channel_id,
+            )
+        )
         managed_codex_home = True
     if managed_codex_home:
-        resolved_codex_home = str(ensure_managed_codex_home(session, discord_channel_id=resolved_discord_channel_id))
+        resolved_codex_home = str(
+            ensure_managed_codex_home(
+                session,
+                cwd=cwd,
+                discord_channel_id=resolved_discord_channel_id,
+            )
+        )
     existing_codex_home = normalize_codex_home(str(existing_meta.get("codex_home") or ""))
     if existing_codex_home and resolved_codex_home and existing_codex_home != resolved_codex_home:
         raise OrcheError(
