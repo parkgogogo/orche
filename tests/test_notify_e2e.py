@@ -134,7 +134,7 @@ class E2EContext:
             self.run(["close", "--session", session], timeout=30)
 
     def notify(self, session: str, summary: str, *, channel_id: str = "", verbose: bool = False) -> subprocess.CompletedProcess[str]:
-        args = ["_notify", "--session", session]
+        args = ["notify-internal", "--session", session]
         if channel_id:
             args.extend(["--channel-id", channel_id])
         if verbose:
@@ -200,6 +200,7 @@ def test_e2e_session_a_notifies_session_b_via_tmux_bridge(e2e_context: E2EContex
         session_b,
         "orche notify",
         f"source session: {session_a}",
+        "event: completed",
         "E2E-TMUX-BRIDGE-ONE",
     )
     assert "status: success" in output
@@ -242,8 +243,12 @@ def test_e2e_concurrent_tmux_bridge_notifications_serialize_same_target(e2e_cont
         first_marker,
         second_marker,
     )
-    first_block = f"orche notify\n  source session: {source_a}\n  status: success\n  cwd: {REPO_ROOT}\n\n  {first_marker}"
-    second_block = f"orche notify\n  source session: {source_c}\n  status: success\n  cwd: {REPO_ROOT}\n\n  {second_marker}"
+    first_block = (
+        f"orche notify\n  source session: {source_a}\n  event: completed\n  status: success\n  cwd: {REPO_ROOT}\n\n  {first_marker}"
+    )
+    second_block = (
+        f"orche notify\n  source session: {source_c}\n  event: completed\n  status: success\n  cwd: {REPO_ROOT}\n\n  {second_marker}"
+    )
     assert first_block in output
     assert second_block in output
 

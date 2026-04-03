@@ -33,7 +33,7 @@ OpenClaw / AI caller
 Background tmux session
   -> agent keeps running
   -> agent works asynchronously
-  -> notify fires on completion or turn stop
+  -> hook/watchdog send notify events through one pipeline
 
 Later follow-up
   -> orche status / read / history
@@ -103,6 +103,7 @@ orche session-id
 
 - `session-new`: create or reuse a persistent managed tmux session with orche metadata, optional managed runtime home, and a required single notify binding
 - `send`: send a task into an existing managed session and return immediately
+- `session-watch status|start|stop`: inspect or manually control the per-session watchdog
 - `status`: show whether the session and agent process are still running
 - `read`: inspect recent terminal output from the live session
 - `history`: inspect recent local control actions for that session
@@ -135,6 +136,38 @@ Current built-in providers include:
 Notify is single-channel per session. To change the notify target or provider, close the session and create a new one.
 
 Inside a managed tmux pane, use `orche session-id` or `orche whoami` to discover the current session id before wiring a target session or other notify flow.
+
+### Unified Notify Pipeline
+
+`orche` now routes both completion hooks and watchdog signals through the same notify service.
+
+- hook path: completion from the managed agent runtime still emits the final completion event
+- watchdog path: background sampling emits degraded-state events when progress stops
+- event types: `completed`, `stalled`, `needs-input`, `failed`
+- dedupe: notify is deduplicated per session turn, so hook and watchdog do not spam the same event repeatedly
+
+This keeps routing, provider dispatch, and session-level notify binding logic in one place.
+
+### Watchdog
+
+Each managed `send` starts a watchdog for the pending turn.
+
+The watchdog samples:
+
+- pane output tail
+- cursor position
+- pane mode / process state
+- CPU activity
+
+It does not rely on a hardcoded prompt-pattern library. Instead it uses heartbeat-style progress detection: if output, cursor, or CPU activity stops changing for long enough, the watchdog emits `stalled`; if the idle period keeps extending, it escalates to `needs-input`; if the agent process exits before completion notify arrives, it emits `failed`.
+
+Manual control:
+
+```bash
+orche session-watch status --session repo-codex-main
+orche session-watch stop --session repo-codex-main
+orche session-watch start --session repo-codex-main
+```
 
 ## CLI Agent Workflow
 
@@ -175,6 +208,9 @@ orche session-new \
 
 # send implementation work to the worker
 orche send --session repo-worker "implement the parser refactor"
+
+# inspect watchdog state for the worker turn
+orche session-watch status --session repo-worker
 
 # later, inspect what the reviewer session received
 orche read --session repo-reviewer --lines 120

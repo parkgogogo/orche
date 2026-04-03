@@ -5,7 +5,7 @@ from .http import HTTPClient, HTTPResponse, UrllibHTTPClient
 from .models import DeliveryResult, NotifyEvent, ResolvedRoute
 from .payload import build_message_from_payload, parse_payload
 from .registry import DEFAULT_REGISTRY, NotifierRegistry
-from .service import NotificationService, dispatch_payload, resolve_routes
+from .service import NotificationService, dispatch_event, dispatch_payload, resolve_routes
 from .tmux_bridge import TmuxBridgeNotifier
 
 __all__ = [
@@ -25,6 +25,7 @@ __all__ = [
     "ResolvedRoute",
     "TmuxBridgeNotifier",
     "UrllibHTTPClient",
+    "dispatch_event",
     "build_message_from_payload",
     "dispatch_payload",
     "load_notify_config",

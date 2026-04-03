@@ -58,6 +58,7 @@ class FakeOrcheRuntime:
         self.selected_window_id = ""
         self.attached_session = ""
         self.switched_session = ""
+        self.watchdog_starts: list[tuple[str, str]] = []
 
     def queue_prompt(self, session: str, scenario: str) -> None:
         self.prompt_scenarios.setdefault(session, deque()).append(scenario)
@@ -329,6 +330,11 @@ def make_runtime(monkeypatch, tmp_path: Path) -> FakeOrcheRuntime:
     monkeypatch.setattr(backend.codex_agent_module, "DEFAULT_CODEX_SOURCE_HOME", source_home)
     monkeypatch.setattr(backend.codex_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", managed_root)
     monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", managed_root)
+    monkeypatch.setattr(
+        backend,
+        "start_session_watchdog",
+        lambda session, *, turn_id="": runtime.watchdog_starts.append((session, turn_id)) or 4321,
+    )
     return runtime
 
 
@@ -364,6 +370,7 @@ def test_codex_e2e_session_lifecycle(xdg_runtime, tmp_path, monkeypatch):
     close_result = runner.invoke(app, ["close", "--session", session])
 
     assert send_result.exit_code == 0
+    assert runtime.watchdog_starts
     assert status_result.exit_code == 0
     assert "Agent:" in status_result.stdout
     assert "codex" in status_result.stdout
@@ -435,6 +442,7 @@ def test_claude_e2e_interactive_approval_prompt_can_be_answered(xdg_runtime, tmp
     final_read_result = runner.invoke(app, ["read", "--session", session, "--lines", "50"])
 
     assert send_result.exit_code == 0
+    assert runtime.watchdog_starts[-1][0] == session
     assert "Approval required to edit files" in read_result.stdout
     assert status_result.exit_code == 0
     assert "claude" in status_result.stdout
@@ -481,6 +489,38 @@ def test_claude_e2e_cancel_recovers_from_blocking_prompt_and_keeps_session(xdg_r
     assert "Interrupted" in after_cancel.stdout
     assert resend_result.exit_code == 0
     assert "Completed: summarize current status" in final_read.stdout
+
+
+def test_session_watch_status_reports_pending_turn_state(xdg_runtime, tmp_path, monkeypatch):
+    runtime = make_runtime(monkeypatch, tmp_path)
+    runner = CliRunner()
+    session = "repo-codex-main"
+
+    assert runner.invoke(
+        app,
+        [
+            "session-new",
+            "--cwd",
+            str(runtime.cwd),
+            "--agent",
+            "codex",
+            "--name",
+            session,
+            "--notify-to",
+            "discord",
+            "--notify-target",
+            "1234567890",
+        ],
+    ).exit_code == 0
+
+    send_result = runner.invoke(app, ["send", "--session", session, "analyze the repo"])
+    watch_result = runner.invoke(app, ["session-watch", "status", "--session", session])
+
+    assert send_result.exit_code == 0
+    assert watch_result.exit_code == 0
+    assert "orche watchdog" in watch_result.stdout
+    assert "Active:" in watch_result.stdout
+    assert "yes" in watch_result.stdout
 
 
 def test_claude_e2e_startup_times_out_if_permission_bypass_is_removed(xdg_runtime, tmp_path, monkeypatch):

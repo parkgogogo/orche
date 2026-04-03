@@ -6,7 +6,9 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
+import sys
 import time
 import traceback
 import uuid
@@ -30,6 +32,11 @@ BACKEND = "smux"
 TMUX_SESSION = "orche-smux"
 DEFAULT_CAPTURE_LINES = 200
 STARTUP_TIMEOUT = 90.0
+WATCHDOG_CAPTURE_LINES = 80
+WATCHDOG_POLL_INTERVAL = 3.0
+WATCHDOG_STALLED_AFTER = 45.0
+WATCHDOG_NEEDS_INPUT_AFTER = 120.0
+WATCHDOG_ACTIVE_CPU_THRESHOLD = 5.0
 CONFIG_COMMENT = (
     "orche runtime config. session is the active orche agent session label; "
     "discord_session is the Discord/OpenClaw session key used for notify routing."
@@ -323,6 +330,96 @@ def read_pane(pane_id: str, lines: int = DEFAULT_CAPTURE_LINES) -> str:
     if result.returncode != 0:
         return ""
     return "\n".join(result.stdout.splitlines()[-lines:])
+
+
+def _tmux_value_for_pane(pane_id: str, fmt: str) -> str:
+    result = tmux("display-message", "-p", "-t", pane_id, fmt, check=False, capture=True)
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def pane_cursor_state(pane_id: str) -> Dict[str, str]:
+    raw = _tmux_value_for_pane(
+        pane_id,
+        "#{cursor_x}\t#{cursor_y}\t#{pane_in_mode}\t#{pane_dead}",
+    )
+    parts = raw.split("\t") if raw else []
+    while len(parts) < 4:
+        parts.append("")
+    return {
+        "cursor_x": parts[0],
+        "cursor_y": parts[1],
+        "pane_in_mode": parts[2],
+        "pane_dead": parts[3],
+    }
+
+
+def process_cpu_percent(pid_text: str) -> float:
+    pid = str(pid_text or "").strip()
+    if not pid.isdigit():
+        return 0.0
+    result = run(["ps", "-o", "%cpu=", "-p", pid], check=False, capture=True)
+    if result.returncode != 0:
+        return 0.0
+    value = (result.stdout or "").strip()
+    try:
+        return float(value)
+    except ValueError:
+        return 0.0
+
+
+def process_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _normalize_watchdog_tail(capture: str) -> str:
+    tail = capture.splitlines()[-12:]
+    return compact_text("\n".join(line.rstrip() for line in tail))
+
+
+def sample_watchdog_state(session: str, *, pane_id: str = "") -> Dict[str, Any]:
+    meta = load_meta(session)
+    pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else {}
+    resolved_pane_id = str(
+        pane_id or bridge_resolve(session) or pending_turn.get("pane_id") or meta.get("pane_id") or ""
+    ).strip()
+    info = get_pane_info(resolved_pane_id) if resolved_pane_id else None
+    plugin_name = str(meta.get("agent") or "codex")
+    plugin = get_agent(plugin_name)
+    capture = read_pane(resolved_pane_id, WATCHDOG_CAPTURE_LINES) if resolved_pane_id else ""
+    cursor = pane_cursor_state(resolved_pane_id) if resolved_pane_id else {}
+    cpu_percent = process_cpu_percent((info or {}).get("pane_pid", ""))
+    tail = _normalize_watchdog_tail(capture)
+    signature = "|".join(
+        [
+            tail,
+            str(cursor.get("cursor_x") or ""),
+            str(cursor.get("cursor_y") or ""),
+            str(cursor.get("pane_in_mode") or ""),
+            str((info or {}).get("pane_current_command") or ""),
+        ]
+    )
+    return {
+        "pane_id": resolved_pane_id,
+        "capture": capture,
+        "capture_bytes": len(capture.encode("utf-8")),
+        "tail": tail,
+        "signature": signature,
+        "cursor_x": str(cursor.get("cursor_x") or ""),
+        "cursor_y": str(cursor.get("cursor_y") or ""),
+        "pane_in_mode": str(cursor.get("pane_in_mode") or ""),
+        "pane_dead": str(cursor.get("pane_dead") or (info or {}).get("pane_dead") or ""),
+        "pane_current_command": str((info or {}).get("pane_current_command") or ""),
+        "cpu_percent": cpu_percent,
+        "agent_running": bool(resolved_pane_id and is_agent_running(plugin, resolved_pane_id)),
+    }
 
 
 def save_meta(session: str, meta: Dict[str, Any]) -> None:
@@ -1182,6 +1279,351 @@ def ensure_native_session(
     return pane_id
 
 
+def _current_turn_entry(meta: Mapping[str, Any], turn_id: str = "") -> Tuple[str, Dict[str, Any]]:
+    pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else None
+    last_completed_turn = meta.get("last_completed_turn") if isinstance(meta.get("last_completed_turn"), dict) else None
+    if turn_id:
+        if pending_turn and str(pending_turn.get("turn_id") or "") == turn_id:
+            return "pending_turn", dict(pending_turn)
+        if last_completed_turn and str(last_completed_turn.get("turn_id") or "") == turn_id:
+            return "last_completed_turn", dict(last_completed_turn)
+    if pending_turn:
+        return "pending_turn", dict(pending_turn)
+    if last_completed_turn:
+        return "last_completed_turn", dict(last_completed_turn)
+    return "", {}
+
+
+def claim_turn_notification(
+    session: str,
+    event: str,
+    *,
+    turn_id: str = "",
+    source: str = "",
+    status: str = "",
+    summary: str = "",
+) -> bool:
+    normalized_event = str(event or "").strip().lower()
+    if not session or not normalized_event:
+        return True
+    with session_lock(session):
+        meta = load_meta(session)
+        turn_key, turn = _current_turn_entry(meta, turn_id=turn_id)
+        if not turn_key or not turn:
+            return True
+        notifications = turn.get("notifications")
+        if not isinstance(notifications, dict):
+            notifications = {}
+        if normalized_event in notifications:
+            return False
+        notifications[normalized_event] = {
+            "at": time.time(),
+            "source": str(source or "").strip(),
+            "status": str(status or "").strip(),
+            "summary": shorten(summary, 400),
+        }
+        turn["notifications"] = notifications
+        meta[turn_key] = turn
+        save_meta(session, meta)
+        return True
+
+
+def release_turn_notification(session: str, event: str, *, turn_id: str = "") -> None:
+    normalized_event = str(event or "").strip().lower()
+    if not session or not normalized_event:
+        return
+    with session_lock(session):
+        meta = load_meta(session)
+        turn_key, turn = _current_turn_entry(meta, turn_id=turn_id)
+        if not turn_key or not turn:
+            return
+        notifications = turn.get("notifications")
+        if not isinstance(notifications, dict) or normalized_event not in notifications:
+            return
+        notifications.pop(normalized_event, None)
+        turn["notifications"] = notifications
+        meta[turn_key] = turn
+        save_meta(session, meta)
+
+
+def update_watchdog_metadata(
+    session: str,
+    *,
+    turn_id: str,
+    values: Mapping[str, Any],
+) -> Dict[str, Any]:
+    with session_lock(session):
+        meta = load_meta(session)
+        pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else None
+        if not pending_turn or str(pending_turn.get("turn_id") or "") != turn_id:
+            return {}
+        watchdog = pending_turn.get("watchdog")
+        if not isinstance(watchdog, dict):
+            watchdog = {}
+        watchdog.update(values)
+        pending_turn["watchdog"] = watchdog
+        meta["pending_turn"] = pending_turn
+        save_meta(session, meta)
+        return dict(watchdog)
+
+
+def _orche_bootstrap_command() -> List[str]:
+    module_dir = Path(__file__).resolve().parent
+    bootstrap = (
+        "import sys; "
+        f"sys.path.insert(0, {str(module_dir)!r}); "
+        "import cli; "
+        "sys.argv = ['orche', *sys.argv[1:]]; "
+        "raise SystemExit(cli.main())"
+    )
+    return [sys.executable, "-c", bootstrap]
+
+
+def emit_internal_notify(
+    session: str,
+    *,
+    event: str,
+    summary: str,
+    status: str,
+    turn_id: str = "",
+    cwd: str = "",
+    source: str = "",
+) -> bool:
+    payload = {
+        "event": event,
+        "summary": summary,
+        "session": session,
+        "cwd": cwd,
+        "turn_id": turn_id,
+        "source": source,
+        "metadata": {
+            "turn_id": turn_id,
+            "source": source,
+        },
+    }
+    command = _orche_bootstrap_command() + ["notify-internal", "--session", session, "--status", status]
+    result = subprocess.run(
+        command,
+        input=json.dumps(payload, ensure_ascii=False),
+        text=True,
+        capture_output=True,
+        check=False,
+        start_new_session=True,
+    )
+    if result.returncode != 0:
+        log_event(
+            "watchdog.notify.failed",
+            session=session,
+            event=event,
+            status=status,
+            detail=shorten((result.stderr or result.stdout or "").strip(), 400),
+        )
+        return False
+    return True
+
+
+def _watchdog_summary_for_event(
+    event: str,
+    *,
+    pending_turn: Mapping[str, Any],
+    capture: str,
+) -> str:
+    before_capture = str(pending_turn.get("before_capture") or "")
+    delta = turn_delta(before_capture, capture) if capture else ""
+    candidate = extract_summary_candidate(delta, prompt=str(pending_turn.get("prompt") or ""))
+    if candidate:
+        return candidate
+    if event == "failed":
+        return "Agent process exited before completion notify was delivered"
+    if event == "needs-input":
+        return "Agent has been idle for an extended period and likely needs input"
+    return "Agent output has stalled without observable progress"
+
+
+def _watchdog_event_status(event: str) -> str:
+    if event == "failed":
+        return "failure"
+    if event in {"stalled", "needs-input"}:
+        return "warning"
+    return "success"
+
+
+def start_session_watchdog(session: str, *, turn_id: str = "") -> int:
+    meta = load_meta(session)
+    turn_key, turn = _current_turn_entry(meta, turn_id=turn_id)
+    if turn_key != "pending_turn" or not turn:
+        raise OrcheError(f"Session {session} has no pending turn to watch")
+    resolved_turn_id = str(turn.get("turn_id") or "").strip()
+    watchdog = turn.get("watchdog") if isinstance(turn.get("watchdog"), dict) else {}
+    existing_pid = int(watchdog.get("pid") or 0) if str(watchdog.get("pid") or "").isdigit() else 0
+    if existing_pid and process_is_alive(existing_pid):
+        return existing_pid
+    command = _orche_bootstrap_command() + ["watchdog-loop-internal", "--session", session, "--turn-id", resolved_turn_id]
+    proc = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    update_watchdog_metadata(
+        session,
+        turn_id=resolved_turn_id,
+        values={
+            "pid": proc.pid,
+            "state": "starting",
+            "started_at": time.time(),
+            "last_progress_at": float(turn.get("submitted_at") or time.time()),
+            "last_sample_at": 0.0,
+            "idle_samples": 0,
+            "stop_requested": False,
+        },
+    )
+    return proc.pid
+
+
+def stop_session_watchdog(session: str) -> int:
+    meta = load_meta(session)
+    turn_key, turn = _current_turn_entry(meta)
+    if turn_key != "pending_turn" or not turn:
+        return 0
+    watchdog = turn.get("watchdog") if isinstance(turn.get("watchdog"), dict) else {}
+    pid = int(watchdog.get("pid") or 0) if str(watchdog.get("pid") or "").isdigit() else 0
+    update_watchdog_metadata(
+        session,
+        turn_id=str(turn.get("turn_id") or ""),
+        values={
+            "stop_requested": True,
+            "stopped_at": time.time(),
+            "state": "stopping",
+        },
+    )
+    if pid > 0 and process_is_alive(pid):
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
+    return pid
+
+
+def session_watch_status(session: str) -> Dict[str, Any]:
+    meta = load_meta(session)
+    pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else {}
+    watchdog = pending_turn.get("watchdog") if isinstance(pending_turn.get("watchdog"), dict) else {}
+    pid = int(watchdog.get("pid") or 0) if str(watchdog.get("pid") or "").isdigit() else 0
+    last_progress_at = float(watchdog.get("last_progress_at") or 0.0)
+    return {
+        "session": session,
+        "active": bool(pending_turn),
+        "turn_id": str(pending_turn.get("turn_id") or ""),
+        "submitted_at": float(pending_turn.get("submitted_at") or 0.0),
+        "watchdog_pid": pid,
+        "watchdog_alive": process_is_alive(pid),
+        "watchdog_state": str(watchdog.get("state") or ""),
+        "watchdog_started_at": float(watchdog.get("started_at") or 0.0),
+        "watchdog_last_progress_at": last_progress_at,
+        "watchdog_last_sample_at": float(watchdog.get("last_sample_at") or 0.0),
+        "watchdog_idle_seconds": max(0.0, time.time() - last_progress_at) if last_progress_at else 0.0,
+        "watchdog_stop_requested": bool(watchdog.get("stop_requested") or False),
+        "watchdog_last_event": str(watchdog.get("last_event") or ""),
+        "watchdog_last_signature": str(watchdog.get("last_signature") or ""),
+        "notifications": dict(pending_turn.get("notifications") or {}),
+    }
+
+
+def run_session_watchdog(
+    session: str,
+    *,
+    turn_id: str,
+    poll_interval: float = WATCHDOG_POLL_INTERVAL,
+    stalled_after: float = WATCHDOG_STALLED_AFTER,
+    needs_input_after: float = WATCHDOG_NEEDS_INPUT_AFTER,
+) -> str:
+    while True:
+        meta = load_meta(session)
+        pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else None
+        if not pending_turn or str(pending_turn.get("turn_id") or "") != turn_id:
+            return "completed"
+        watchdog = pending_turn.get("watchdog") if isinstance(pending_turn.get("watchdog"), dict) else {}
+        if bool(watchdog.get("stop_requested")):
+            update_watchdog_metadata(
+                session,
+                turn_id=turn_id,
+                values={"state": "stopped", "stopped_at": time.time()},
+            )
+            return "stopped"
+        sample = sample_watchdog_state(session, pane_id=str(pending_turn.get("pane_id") or meta.get("pane_id") or ""))
+        now = time.time()
+        previous_signature = str(watchdog.get("last_signature") or "")
+        previous_cursor = (
+            str(watchdog.get("last_cursor_x") or ""),
+            str(watchdog.get("last_cursor_y") or ""),
+        )
+        current_cursor = (str(sample.get("cursor_x") or ""), str(sample.get("cursor_y") or ""))
+        progress_detected = (
+            not previous_signature
+            or previous_signature != str(sample.get("signature") or "")
+            or previous_cursor != current_cursor
+            or float(sample.get("cpu_percent") or 0.0) >= WATCHDOG_ACTIVE_CPU_THRESHOLD
+        )
+        last_progress_at = float(watchdog.get("last_progress_at") or pending_turn.get("submitted_at") or now)
+        idle_samples = int(watchdog.get("idle_samples") or 0)
+        state = "running"
+        if progress_detected:
+            last_progress_at = now
+            idle_samples = 0
+        else:
+            idle_samples += 1
+            idle_seconds = max(0.0, now - last_progress_at)
+            if not bool(sample.get("agent_running")):
+                state = "failed"
+            elif idle_samples >= 2 and idle_seconds >= needs_input_after:
+                state = "needs-input"
+            elif idle_samples >= 2 and idle_seconds >= stalled_after:
+                state = "stalled"
+        update_watchdog_metadata(
+            session,
+            turn_id=turn_id,
+            values={
+                "pid": os.getpid(),
+                "state": state,
+                "last_signature": str(sample.get("signature") or ""),
+                "last_cursor_x": current_cursor[0],
+                "last_cursor_y": current_cursor[1],
+                "last_cpu_percent": float(sample.get("cpu_percent") or 0.0),
+                "last_sample_at": now,
+                "last_progress_at": last_progress_at,
+                "idle_samples": idle_samples,
+            },
+        )
+        if state in {"failed", "stalled", "needs-input"}:
+            emitted = False
+            if str(watchdog.get("last_event") or "") != state:
+                summary = _watchdog_summary_for_event(
+                    state,
+                    pending_turn=pending_turn,
+                    capture=str(sample.get("capture") or ""),
+                )
+                emitted = emit_internal_notify(
+                    session,
+                    event=state,
+                    summary=summary,
+                    status=_watchdog_event_status(state),
+                    turn_id=turn_id,
+                    cwd=str(meta.get("cwd") or ""),
+                    source="watchdog",
+                )
+            update_watchdog_metadata(
+                session,
+                turn_id=turn_id,
+                values={
+                    "last_event": state if emitted else str(watchdog.get("last_event") or ""),
+                    "last_event_at": now if emitted else float(watchdog.get("last_event_at") or 0.0),
+                },
+            )
+            if state == "failed":
+                return state
+        time.sleep(max(0.5, poll_interval))
+
+
 def ensure_session(
     session: str,
     cwd: Path,
@@ -1342,16 +1784,30 @@ def send_prompt(
             approve_all=approve_all,
         )
     before_capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES)
+    turn_id = uuid.uuid4().hex[:12]
     meta = load_meta(session)
     meta["pending_turn"] = {
-        "turn_id": uuid.uuid4().hex[:12],
+        "turn_id": turn_id,
         "prompt": prompt,
         "before_capture": before_capture,
         "submitted_at": time.time(),
         "pane_id": pane_id,
+        "notifications": {},
+        "watchdog": {
+            "state": "queued",
+            "started_at": 0.0,
+            "last_progress_at": time.time(),
+            "last_sample_at": 0.0,
+            "idle_samples": 0,
+            "stop_requested": False,
+        },
     }
     save_meta(session, meta)
     plugin.submit_prompt(session, prompt, bridge=BRIDGE)
+    try:
+        start_session_watchdog(session, turn_id=turn_id)
+    except Exception as exc:  # pragma: no cover
+        log_exception("watchdog.start.error", exc, session=session, turn_id=turn_id)
     append_action_history(session, cwd, agent, "prompt", prompt=prompt, pane_id=pane_id)
     return pane_id
 
@@ -1393,6 +1849,8 @@ def build_status(session: str) -> Dict[str, Any]:
     runtime_home = runtime_home_from_meta(meta)
     runtime_home_managed = runtime_home_managed_from_meta(meta)
     agent_running = bool(pane_id and is_agent_running(plugin, pane_id))
+    pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else {}
+    watchdog = pending_turn.get("watchdog") if isinstance(pending_turn.get("watchdog"), dict) else {}
     return {
         "backend": BACKEND,
         "session": session,
@@ -1410,6 +1868,9 @@ def build_status(session: str) -> Dict[str, Any]:
         "pane_exists": bool(pane_id and pane_exists(pane_id)),
         "discord_session": discord_session,
         "notify_binding": notify_binding,
+        "pending_turn_id": str(pending_turn.get("turn_id") or ""),
+        "pending_turn_submitted_at": float(pending_turn.get("submitted_at") or 0.0),
+        "watchdog": dict(watchdog),
     }
 
 
@@ -1471,6 +1932,8 @@ def close_session(session: str) -> str:
     agent = str(meta.get("agent") or "codex")
     plugin = get_agent(agent)
     pane_id = bridge_resolve(session) or str(meta.get("pane_id") or "")
+    with contextlib.suppress(Exception):
+        stop_session_watchdog(session)
     if pane_id and pane_exists(pane_id):
         info = get_pane_info(pane_id)
         if info is not None:

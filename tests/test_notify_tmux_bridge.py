@@ -20,7 +20,7 @@ def test_tmux_bridge_notifier_delivers_prompt_through_backend_helper(monkeypatch
 
     result = notifier.send(
         NotifyEvent(
-            event="turn-complete",
+            event="completed",
             summary="review source session output",
             session="source-session",
             cwd="/tmp/repo",
@@ -34,7 +34,7 @@ def test_tmux_bridge_notifier_delivers_prompt_through_backend_helper(monkeypatch
     assert captured == [
         (
             "target-session",
-            "orche notify\nsource session: source-session\nstatus: success\ncwd: /tmp/repo\n\nreview source session output",
+            "orche notify\nsource session: source-session\nevent: completed\nstatus: success\ncwd: /tmp/repo\n\nreview source session output",
         )
     ]
 
@@ -50,12 +50,12 @@ def test_tmux_bridge_notifier_uses_default_prefix_for_empty_summary(monkeypatch)
     notifier = TmuxBridgeNotifier(NotifyConfig(default_message_prefix="Codex turn complete"))
 
     notifier.send(
-        NotifyEvent(event="turn-complete", summary="", session="", cwd="", status=""),
+        NotifyEvent(event="completed", summary="", session="", cwd="", status=""),
         ResolvedRoute(provider="tmux-bridge", target="target-session"),
     )
 
     assert captured == [
-        "orche notify\nsource session: -\nstatus: success\ncwd: -\n\nCodex turn complete"
+        "orche notify\nsource session: -\nevent: completed\nstatus: success\ncwd: -\n\nCodex turn complete"
     ]
 
 
@@ -64,7 +64,7 @@ def test_tmux_bridge_notifier_requires_target_session():
 
     with pytest.raises(NotifyConfigError):
         notifier.send(
-            NotifyEvent(event="turn-complete", summary="done", session="source", status="success"),
+            NotifyEvent(event="completed", summary="done", session="source", status="success"),
             ResolvedRoute(provider="tmux-bridge", target=""),
         )
 
@@ -78,6 +78,6 @@ def test_tmux_bridge_notifier_wraps_backend_errors(monkeypatch):
 
     with pytest.raises(NotifyDeliveryError, match="tmux-bridge delivery failed: broken bridge"):
         notifier.send(
-            NotifyEvent(event="turn-complete", summary="done", session="source", status="success"),
+            NotifyEvent(event="completed", summary="done", session="source", status="success"),
             ResolvedRoute(provider="tmux-bridge", target="target-session"),
         )

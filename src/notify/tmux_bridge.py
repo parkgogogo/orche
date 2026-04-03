@@ -27,6 +27,7 @@ class TmuxBridgeNotifier(Notifier):
 
     def _render_prompt(self, event: NotifyEvent) -> str:
         status = event.status.strip().lower() or "success"
+        event_name = event.event.strip().lower() or "completed"
         session = event.session or "-"
         cwd = event.cwd or "-"
         summary = event.summary or self.config.default_message_prefix
@@ -34,6 +35,7 @@ class TmuxBridgeNotifier(Notifier):
             [
                 "orche notify",
                 f"source session: {session}",
+                f"event: {event_name}",
                 f"status: {status}",
                 f"cwd: {cwd}",
                 "",

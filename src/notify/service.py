@@ -181,7 +181,39 @@ def dispatch_payload(
         notify_config=notify_config,
         explicit_channel_id=explicit_channel_id,
     )
-    if not routes:
+    return dispatch_event(
+        event,
+        runtime_config=runtime_config,
+        notify_config=notify_config,
+        routes=routes,
+        service=service,
+    )
+
+
+def dispatch_event(
+    event: NotifyEvent,
+    *,
+    runtime_config: Mapping[str, Any],
+    notify_config=None,
+    explicit_channel_id: str = "",
+    routes: Sequence[ResolvedRoute] | None = None,
+    env: Mapping[str, str] | None = None,
+    service: NotificationService | None = None,
+) -> Sequence[DeliveryResult]:
+    effective_config = notify_config or load_notify_config(runtime_config, env=env)
+    if not effective_config.enabled:
+        return ()
+    resolved_routes = tuple(
+        routes
+        if routes is not None
+        else resolve_routes(
+            event=event,
+            runtime_config=runtime_config,
+            notify_config=effective_config,
+            explicit_channel_id=explicit_channel_id,
+        )
+    )
+    if not resolved_routes:
         return ()
     notifier_service = service or NotificationService()
-    return notifier_service.send(event, routes, notify_config)
+    return notifier_service.send(event, resolved_routes, effective_config)

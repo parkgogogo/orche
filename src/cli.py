@@ -25,6 +25,7 @@ from backend import (
     bridge_type,
     build_status,
     cancel_session,
+    release_turn_notification,
     close_session,
     current_session_id,
     default_session_name,
@@ -38,8 +39,13 @@ from backend import (
     latest_turn_summary,
     log_event,
     log_exception,
+    claim_turn_notification,
     resolve_session_context,
+    run_session_watchdog,
     send_prompt,
+    session_watch_status,
+    start_session_watchdog,
+    stop_session_watchdog,
     set_config_value,
     supported_agent_names,
 )
@@ -47,6 +53,7 @@ from notify import (
     NotificationService,
     ResolvedRoute,
     build_message_from_payload,
+    dispatch_event,
     load_notify_config,
     parse_payload,
     resolve_routes,
@@ -326,7 +333,35 @@ def _render_status(info: dict) -> None:
     if isinstance(notify_binding, dict) and notify_binding:
         body.append("\nNotify binding: ", style="bold cyan")
         body.append(json.dumps(notify_binding, ensure_ascii=False))
+    if info.get("pending_turn_id"):
+        body.append("\nPending turn: ", style="bold cyan")
+        body.append(str(info["pending_turn_id"]))
+    watchdog = info.get("watchdog")
+    if isinstance(watchdog, dict) and watchdog:
+        body.append("\nWatchdog: ", style="bold cyan")
+        body.append(str(watchdog.get("state") or "-"))
     console.print(Panel.fit(body, title="orche status", border_style="blue"))
+
+
+def _render_watch_status(info: dict) -> None:
+    body = Text()
+    body.append("Session: ", style="bold cyan")
+    body.append(f"{info.get('session', '-')}\n")
+    body.append("Active: ", style="bold cyan")
+    body.append("yes\n" if info.get("active") else "no\n")
+    body.append("Turn: ", style="bold cyan")
+    body.append(f"{info.get('turn_id', '-') or '-'}\n")
+    body.append("State: ", style="bold cyan")
+    body.append(f"{info.get('watchdog_state', '-') or '-'}\n")
+    body.append("PID: ", style="bold cyan")
+    body.append(f"{info.get('watchdog_pid', 0) or '-'}\n")
+    body.append("Alive: ", style="bold cyan")
+    body.append("yes\n" if info.get("watchdog_alive") else "no\n")
+    body.append("Stop requested: ", style="bold cyan")
+    body.append("yes\n" if info.get("watchdog_stop_requested") else "no\n")
+    body.append("Idle seconds: ", style="bold cyan")
+    body.append(f"{float(info.get('watchdog_idle_seconds', 0.0)):.1f}")
+    console.print(Panel.fit(body, title="orche watchdog", border_style="yellow"))
 
 
 @app.callback(invoke_without_command=True)
@@ -577,8 +612,8 @@ def turn_summary_hidden(
     turn_summary(session=session)
 
 
-@app.command("_notify", hidden=True)
-def notify_hidden(
+@app.command("notify-internal", hidden=True)
+def notify_internal_command(
     payload: Optional[str] = typer.Argument(None, help="Optional JSON payload. If omitted, stdin is used."),
     session: Optional[str] = typer.Option(None, "--session", help="Explicit session override."),
     channel_id: Optional[str] = typer.Option(None, "--channel-id", help="Explicit Discord channel override."),
@@ -640,9 +675,36 @@ def notify_hidden(
                 channel_id=resolved_channel_id,
             )
             return
+        if not claim_turn_notification(
+            event.session,
+            event.event,
+            turn_id=str(event.metadata.get("turn_id") or ""),
+            source=str(event.metadata.get("source") or "hook"),
+            status=event.status,
+            summary=event.summary,
+        ):
+            console.print(f"notify skipped: duplicate {event.event} event")
+            log_event(
+                "notify.skipped",
+                reason="duplicate",
+                session=resolved_session or event.session,
+                notify_event=event.event,
+            )
+            return
         service = NotificationService()
-        results = service.send(event, routes, notify_config)
+        results = dispatch_event(
+            event,
+            runtime_config=runtime_config,
+            notify_config=notify_config,
+            routes=routes,
+            service=service,
+        )
         if not results:
+            release_turn_notification(
+                event.session,
+                event.event,
+                turn_id=str(event.metadata.get("turn_id") or ""),
+            )
             console.print("notify skipped: no notifier routes resolved")
             log_event(
                 "notify.skipped",
@@ -652,12 +714,14 @@ def notify_hidden(
             )
             return
         has_failure = False
+        has_success = False
         for result in results:
             state = "ok" if result.ok else "failed"
             detail = result.detail or "-"
             line = f"notify {state}: provider={result.provider} detail={detail}"
             if result.ok:
                 console.print(line)
+                has_success = True
             else:
                 stderr.print(line)
                 has_failure = True
@@ -669,6 +733,12 @@ def notify_hidden(
                 session=resolved_session or event.session,
                 channel_id=result.target or resolved_channel_id,
             )
+        if has_failure and not has_success:
+            release_turn_notification(
+                event.session,
+                event.event,
+                turn_id=str(event.metadata.get("turn_id") or ""),
+            )
         if has_failure:
             raise typer.Exit(code=1)
     except typer.Exit:
@@ -676,6 +746,18 @@ def notify_hidden(
     except Exception as exc:  # pragma: no cover
         stderr.print(f"notify error: {exc}")
         log_exception("notify.error", exc)
+        raise typer.Exit(code=1)
+
+
+@app.command("watchdog-loop-internal", hidden=True)
+def watchdog_loop_internal_command(
+    session: str = typer.Option(..., "--session", help="Session name."),
+    turn_id: str = typer.Option(..., "--turn-id", help="Turn id to watch."),
+) -> None:
+    try:
+        run_session_watchdog(session, turn_id=turn_id)
+    except Exception as exc:  # pragma: no cover
+        log_exception("watchdog.loop.error", exc, session=session, turn_id=turn_id)
         raise typer.Exit(code=1)
 
 
@@ -687,7 +769,7 @@ def notify_discord_hidden(
     status: str = typer.Option("success", "--status", help="Delivery status label."),
     verbose: bool = typer.Option(False, "--verbose", help="Print config, payload, and delivery details."),
 ) -> None:
-    notify_hidden(
+    notify_internal_command(
         payload=payload,
         session=session,
         channel_id=channel_id,
@@ -717,6 +799,32 @@ def history(
         if details:
             line += f"\t{details}"
         console.print(line)
+
+
+@app.command("session-watch")
+def session_watch_command(
+    action: str = typer.Argument(..., help="One of: status, start, stop."),
+    session: str = typer.Option(..., "--session", help="Session name."),
+) -> None:
+    try:
+        normalized_action = action.strip().lower()
+        if normalized_action == "status":
+            _render_watch_status(session_watch_status(session))
+            return
+        if normalized_action == "start":
+            pid = start_session_watchdog(session)
+            console.print(f"watchdog started: pid={pid}")
+            return
+        if normalized_action == "stop":
+            pid = stop_session_watchdog(session)
+            if pid:
+                console.print(f"watchdog stopped: pid={pid}")
+            else:
+                console.print("watchdog stopped: no active watchdog")
+            return
+        raise OrcheError("session-watch action must be one of: status, start, stop")
+    except (OrcheError, subprocess.CalledProcessError) as exc:
+        _handle_error(exc)
 
 
 @sessions_app.command("list")
@@ -754,6 +862,41 @@ def sessions_clearall() -> None:
         close_session(session)
         cleared += 1
     console.print(f"Cleared {cleared} session(s)")
+
+
+def _notify_internal_entry(
+    payload: Optional[str] = typer.Argument(None, help="Optional JSON payload. If omitted, stdin is used."),
+    session: Optional[str] = typer.Option(None, "--session", help="Explicit session override."),
+    channel_id: Optional[str] = typer.Option(None, "--channel-id", help="Explicit Discord channel override."),
+    status: str = typer.Option("success", "--status", help="Delivery status label."),
+    verbose: bool = typer.Option(False, "--verbose", help="Print config, payload, and delivery details."),
+) -> None:
+    notify_internal_command(
+        payload=payload,
+        session=session,
+        channel_id=channel_id,
+        status=status,
+        verbose=verbose,
+    )
+
+
+def _watchdog_loop_internal_entry(
+    session: str = typer.Option(..., "--session", help="Session name."),
+    turn_id: str = typer.Option(..., "--turn-id", help="Turn id to watch."),
+) -> None:
+    watchdog_loop_internal_command(session=session, turn_id=turn_id)
+
+
+def _session_watch_entry(
+    action: str = typer.Argument(..., help="One of: status, start, stop."),
+    session: str = typer.Option(..., "--session", help="Session name."),
+) -> None:
+    session_watch_command(action=action, session=session)
+
+
+app.command("notify-internal", hidden=True)(_notify_internal_entry)
+app.command("watchdog-loop-internal", hidden=True)(_watchdog_loop_internal_entry)
+app.command("session-watch")(_session_watch_entry)
 
 
 def main() -> int:

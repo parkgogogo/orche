@@ -6,7 +6,7 @@ from notify.base import Notifier
 from notify.config import NotifyConfig
 from notify.models import DeliveryResult, NotifyEvent, ResolvedRoute
 from notify.registry import NotifierRegistry
-from notify.service import NotificationService, dispatch_payload, resolve_routes
+from notify.service import NotificationService, dispatch_event, dispatch_payload, resolve_routes
 
 
 class SuccessNotifier(Notifier):
@@ -92,6 +92,37 @@ def test_dispatch_payload_builds_message_and_uses_service():
     assert event.session == "demo"
     assert routes[0].provider == "discord"
     assert config.provider == "discord"
+
+
+def test_dispatch_event_uses_supplied_event_and_routes():
+    service = CapturingService()
+    event = NotifyEvent(event="stalled", summary="stuck", session="demo", status="warning")
+
+    results = dispatch_event(
+        event,
+        runtime_config={"discord_channel_id": "123", "discord_bot_token": "token"},
+        routes=(ResolvedRoute(provider="discord", target="123", session="demo"),),
+        service=service,
+    )
+
+    assert results[0].ok is True
+    sent_event, routes, _config = service.calls[0]
+    assert sent_event.event == "stalled"
+    assert routes[0].target == "123"
+
+
+def test_dispatch_event_returns_empty_when_disabled():
+    service = CapturingService()
+    event = NotifyEvent(event="failed", summary="boom", session="demo", status="failure")
+
+    results = dispatch_event(
+        event,
+        runtime_config={"notify_enabled": False, "discord_channel_id": "123"},
+        service=service,
+    )
+
+    assert results == ()
+    assert service.calls == []
 
 
 def test_notification_service_returns_empty_when_no_notifiers():

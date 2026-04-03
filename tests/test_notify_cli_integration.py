@@ -32,7 +32,7 @@ def test_notify_hidden_command_reads_stdin_and_sends_message(xdg_runtime, monkey
 
     result = CliRunner().invoke(
         app,
-        ["_notify"],
+        ["notify-internal"],
         input='{"event":"turn-complete","summary":"Done"}',
     )
 
@@ -58,7 +58,7 @@ def test_notify_hidden_command_verbose_prints_config_and_event(xdg_runtime, monk
 
     result = CliRunner().invoke(
         app,
-        ["_notify", "--verbose"],
+        ["notify-internal", "--verbose"],
         input='{"event":"turn-complete","summary":"Done"}',
     )
 
@@ -89,7 +89,7 @@ def test_notify_hidden_command_failure_prints_error_and_returns_nonzero(xdg_runt
 
     result = CliRunner().invoke(
         app,
-        ["_notify"],
+        ["notify-internal"],
         input='{"event":"turn-complete","summary":"Done"}',
     )
 
@@ -131,7 +131,7 @@ def test_notify_hidden_command_prefers_session_meta_channel_over_global_config(x
 
     result = CliRunner().invoke(
         app,
-        ["_notify", "--session", "repo-codex-main"],
+        ["notify-internal", "--session", "repo-codex-main"],
         input='{"event":"turn-complete","summary":"Done"}',
     )
 
@@ -173,10 +173,58 @@ def test_notify_hidden_command_uses_session_notify_binding_for_tmux_bridge(xdg_r
 
     result = CliRunner().invoke(
         app,
-        ["_notify", "--session", "repo-codex-main"],
+        ["notify-internal", "--session", "repo-codex-main"],
         input='{"event":"turn-complete","summary":"Done"}',
     )
 
     assert result.exit_code == 0
     assert "notify ok: provider=tmux-bridge detail=delivered" in result.output
     assert captured[0][0] == "target-session"
+
+
+def test_notify_hidden_command_deduplicates_same_turn_event(xdg_runtime, monkeypatch):
+    fake_client = FakeHTTPClient()
+    monkeypatch.setattr("notify.discord.UrllibHTTPClient", StubHTTPClientFactory(fake_client))
+    write_runtime_config(
+        xdg_runtime["config_path"],
+        {
+            "notify_enabled": True,
+            "discord_bot_token": "bot-token",
+            "session": "repo-codex-main",
+            "cwd": "/tmp/repo",
+        },
+    )
+
+    from backend import save_meta
+
+    save_meta(
+        "repo-codex-main",
+        {
+            "session": "repo-codex-main",
+            "cwd": "/tmp/repo",
+            "agent": "codex",
+            "pane_id": "%1",
+            "notify_binding": {
+                "provider": "discord",
+                "target": "1111111111",
+                "session": "agent:main:discord:channel:1111111111",
+            },
+            "pending_turn": {
+                "turn_id": "turn-1",
+                "prompt": "hello",
+                "submitted_at": 1.0,
+                "pane_id": "%1",
+                "notifications": {},
+            },
+        },
+    )
+
+    payload = '{"event":"completed","summary":"Done","metadata":{"turn_id":"turn-1","source":"watchdog"}}'
+    runner = CliRunner()
+    first = runner.invoke(app, ["notify-internal", "--session", "repo-codex-main"], input=payload)
+    second = runner.invoke(app, ["notify-internal", "--session", "repo-codex-main"], input=payload)
+
+    assert first.exit_code == 0
+    assert second.exit_code == 0
+    assert len(fake_client.requests) == 1
+    assert "notify skipped: duplicate completed event" in second.output

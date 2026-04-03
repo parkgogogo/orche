@@ -84,6 +84,7 @@ def test_build_message_from_payload_prefers_explicit_values():
     )
 
     assert message is not None
+    assert message.event == "completed"
     assert message.session == "explicit-session"
     assert message.cwd == "/repo"
     assert message.summary == "**Done**\n\n- fixed it"
@@ -176,9 +177,52 @@ def test_build_message_from_payload_accepts_claude_stop_hook_event():
     )
 
     assert message is not None
-    assert message.event == "stop"
+    assert message.event == "completed"
     assert message.session == "claude-session"
     assert message.summary == "Done"
+
+
+def test_build_message_from_payload_reads_watchdog_metadata_and_event_aliases():
+    message = build_message_from_payload(
+        '{"event":"needs_input","summary":"","session":"demo","metadata":{"turn_id":"turn-1","source":"watchdog"}}',
+        notify_config=NotifyConfig(discord=DiscordNotifyConfig(mention_user_id="")),
+        runtime_config={},
+        summary_loader=lambda session: "",
+        status="warning",
+    )
+
+    assert message is not None
+    assert message.event == "needs-input"
+    assert message.status == "warning"
+    assert message.summary == "Agent likely needs input"
+    assert message.metadata["turn_id"] == "turn-1"
+    assert message.metadata["source"] == "watchdog"
+
+
+def test_build_message_from_payload_uses_failed_default_summary():
+    message = build_message_from_payload(
+        '{"event":"failed","summary":"   ","session":"demo"}',
+        notify_config=NotifyConfig(discord=DiscordNotifyConfig(mention_user_id="")),
+        runtime_config={},
+        summary_loader=lambda session: "",
+        status="failure",
+    )
+
+    assert message is not None
+    assert message.summary == "Agent turn failed"
+
+
+def test_build_message_from_payload_uses_stalled_default_summary():
+    message = build_message_from_payload(
+        '{"event":"stalled","summary":"   ","session":"demo"}',
+        notify_config=NotifyConfig(discord=DiscordNotifyConfig(mention_user_id="")),
+        runtime_config={},
+        summary_loader=lambda session: "",
+        status="warning",
+    )
+
+    assert message is not None
+    assert message.summary == "Agent turn stalled"
 
 
 def test_build_message_from_payload_returns_none_for_invalid_payload_text():

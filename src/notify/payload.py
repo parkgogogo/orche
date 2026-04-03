@@ -7,16 +7,23 @@ from typing import Any, Callable, Mapping, Optional
 from .config import NotifyConfig
 from .models import NotifyEvent
 
-SUPPORTED_EVENTS = {
-    "",
-    "agent-turn-complete",
-    "turn-complete",
-    "turn_complete",
-    "task_complete",
-    "task-complete",
-    "stop",
-    "subagentstop",
+EVENT_ALIASES = {
+    "": "completed",
+    "agent-turn-complete": "completed",
+    "turn-complete": "completed",
+    "turn_complete": "completed",
+    "task_complete": "completed",
+    "task-complete": "completed",
+    "stop": "completed",
+    "subagentstop": "completed",
+    "completed": "completed",
+    "complete": "completed",
+    "stalled": "stalled",
+    "needs-input": "needs-input",
+    "needs_input": "needs-input",
+    "failed": "failed",
 }
+SUPPORTED_EVENTS = set(EVENT_ALIASES)
 
 
 def _first_string(*values: Any) -> str:
@@ -160,7 +167,7 @@ def summarize_assistant_message(text: str, *, max_chars: int) -> str:
 
 
 def _event_name(payload: Mapping[str, Any]) -> str:
-    return _first_string(
+    raw = _first_string(
         payload.get("event"),
         payload.get("type"),
         payload.get("kind"),
@@ -171,6 +178,7 @@ def _event_name(payload: Mapping[str, Any]) -> str:
         _payload_value(payload, ("payload", "event")),
         _payload_value(payload, ("payload", "hook_event_name")),
     ).lower()
+    return EVENT_ALIASES.get(raw, raw)
 
 
 def _assistant_message(payload: Mapping[str, Any]) -> str:
@@ -215,6 +223,35 @@ def _payload_cwd(payload: Mapping[str, Any]) -> str:
     return _first_string(payload.get("cwd"), _payload_value(payload, ("payload", "cwd")))
 
 
+def _payload_turn_id(payload: Mapping[str, Any]) -> str:
+    return _first_string(
+        payload.get("turn_id"),
+        payload.get("turnId"),
+        _payload_value(payload, ("metadata", "turn_id")),
+        _payload_value(payload, ("metadata", "turnId")),
+        _payload_value(payload, ("payload", "turn_id")),
+        _payload_value(payload, ("payload", "turnId")),
+    )
+
+
+def _payload_source(payload: Mapping[str, Any]) -> str:
+    return _first_string(
+        payload.get("source"),
+        _payload_value(payload, ("metadata", "source")),
+        _payload_value(payload, ("payload", "source")),
+    )
+
+
+def _default_summary_for_event(event_name: str, notify_config: NotifyConfig) -> str:
+    if event_name == "failed":
+        return "Agent turn failed"
+    if event_name == "needs-input":
+        return "Agent likely needs input"
+    if event_name == "stalled":
+        return "Agent turn stalled"
+    return notify_config.default_message_prefix
+
+
 def build_message_from_payload(
     payload_text: str,
     *,
@@ -239,13 +276,16 @@ def build_message_from_payload(
         assistant_message,
         max_chars=notify_config.summary_max_chars,
     )
-    summary = assistant_summary or notify_config.default_message_prefix
+    summary = assistant_summary or _default_summary_for_event(event_name, notify_config)
     normalized_status = status.strip().lower() or "success"
     return NotifyEvent(
-        event=event_name or "turn-complete",
+        event=event_name or "completed",
         summary=summary,
         session=session,
         cwd=cwd,
         status=normalized_status,
-        metadata={},
+        metadata={
+            "turn_id": _payload_turn_id(payload),
+            "source": _payload_source(payload),
+        },
     )
