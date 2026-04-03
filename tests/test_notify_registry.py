@@ -12,8 +12,8 @@ from notify.registry import NotifierRegistry
 class DummyNotifier(Notifier):
     name = "dummy"
 
-    def send(self, message):
-        return DeliveryResult(provider=self.name, ok=True, detail=message.content)
+    def send(self, event, route):
+        return DeliveryResult(provider=self.name, ok=True, detail=event.summary, target=route.target)
 
 
 def test_registry_registers_custom_notifier():

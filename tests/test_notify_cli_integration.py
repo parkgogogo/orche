@@ -42,7 +42,7 @@ def test_notify_hidden_command_reads_stdin_and_sends_message(xdg_runtime, monkey
     assert fake_client.requests[0]["json_body"]["content"].startswith("<@1475734550813605959> Done")
 
 
-def test_notify_hidden_command_verbose_prints_config_and_message(xdg_runtime, monkeypatch):
+def test_notify_hidden_command_verbose_prints_config_and_event(xdg_runtime, monkeypatch):
     fake_client = FakeHTTPClient()
     monkeypatch.setattr("notify.discord.UrllibHTTPClient", StubHTTPClientFactory(fake_client))
     write_runtime_config(
@@ -66,9 +66,10 @@ def test_notify_hidden_command_verbose_prints_config_and_message(xdg_runtime, mo
     assert "notify config:" in result.output
     assert "discord.bot_token: set" in result.output
     assert "runtime.channel_id: 1234567890" in result.output
-    assert "notify message:" in result.output
-    assert "content:" in result.output
-    assert "<@1475734550813605959> Done" in result.output
+    assert "notify event:" in result.output
+    assert "summary:" in result.output
+    assert "Done" in result.output
+    assert "discord: 1234567890" in result.output
     assert "notify ok: provider=discord detail=200" in result.output
 
 

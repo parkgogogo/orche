@@ -38,7 +38,7 @@ class NotifierRegistry:
 
 
 def _discord_factory(config: NotifyConfig, http_client: HTTPClient | None) -> Notifier:
-    return DiscordNotifier(config.discord, http_client=http_client)
+    return DiscordNotifier(config, http_client=http_client)
 
 
 DEFAULT_REGISTRY = NotifierRegistry()

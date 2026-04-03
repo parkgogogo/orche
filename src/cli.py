@@ -38,7 +38,14 @@ from backend import (
     send_prompt,
     set_config_value,
 )
-from notify import NotificationService, build_message_from_payload, load_notify_config, parse_payload
+from notify import (
+    NotificationService,
+    ResolvedRoute,
+    build_message_from_payload,
+    load_notify_config,
+    parse_payload,
+    resolve_routes,
+)
 from paths import ensure_directories
 from version import __version__
 
@@ -74,7 +81,8 @@ def _print_notify_verbose(
     session: str,
     channel_id: str,
     payload_text: str,
-    message,
+    event,
+    routes: list[ResolvedRoute],
 ) -> None:
     console.print("notify config:")
     console.print(f"  enabled: {_bool_label(notify_config.enabled)}")
@@ -95,7 +103,7 @@ def _print_notify_verbose(
     if parsed_payload is None:
         console.print("  payload_json: invalid")
     else:
-        event = (
+        payload_event = (
             parsed_payload.get("event")
             or parsed_payload.get("type")
             or parsed_payload.get("kind")
@@ -103,16 +111,23 @@ def _print_notify_verbose(
             or parsed_payload.get("name")
             or "-"
         )
-        console.print(f"  payload_json: valid (event={event})")
-    if message is None:
-        console.print("notify message: <none>")
+        console.print(f"  payload_json: valid (event={payload_event})")
+    if event is None:
+        console.print("notify event: <none>")
         return
-    console.print("notify message:")
-    console.print(f"  channel_id: {message.channel_id or '-'}")
-    console.print(f"  session: {message.session or '-'}")
-    console.print(f"  status: {message.status or '-'}")
-    console.print("  content:")
-    console.print(message.content)
+    console.print("notify event:")
+    console.print(f"  event: {event.event or '-'}")
+    console.print(f"  session: {event.session or '-'}")
+    console.print(f"  cwd: {event.cwd or '-'}")
+    console.print(f"  status: {event.status or '-'}")
+    console.print("  summary:")
+    console.print(event.summary)
+    console.print("  routes:")
+    if not routes:
+        console.print("    <none>")
+        return
+    for route in routes:
+        console.print(f"    {route.provider}: {route.target or '-'}")
 
 
 def _notify_runtime_config(runtime_config: dict, session: str) -> dict:
@@ -435,15 +450,24 @@ def notify_discord_hidden(
         resolved_session = session or os.environ.get("ORCHE_SESSION", "")
         runtime_config = _notify_runtime_config(runtime_config, resolved_session)
         notify_config = load_notify_config(runtime_config)
-        message = build_message_from_payload(
+        event = build_message_from_payload(
             payload_text or "",
             notify_config=notify_config,
             runtime_config=runtime_config,
             summary_loader=latest_turn_summary,
-            explicit_channel_id=resolved_channel_id,
             explicit_session=resolved_session,
             status=status,
         )
+        routes = []
+        if event is not None:
+            routes = list(
+                resolve_routes(
+                    event=event,
+                    runtime_config=runtime_config,
+                    notify_config=notify_config,
+                    explicit_channel_id=resolved_channel_id,
+                )
+            )
         if verbose:
             _print_notify_verbose(
                 runtime_config=runtime_config,
@@ -451,7 +475,8 @@ def notify_discord_hidden(
                 session=resolved_session,
                 channel_id=resolved_channel_id,
                 payload_text=payload_text or "",
-                message=message,
+                event=event,
+                routes=routes,
             )
         if not notify_config.enabled:
             console.print("notify skipped: notify.enabled is false")
@@ -462,24 +487,24 @@ def notify_discord_hidden(
                 channel_id=resolved_channel_id,
             )
             return
-        if message is None:
-            console.print("notify skipped: payload/config did not produce a deliverable message")
+        if event is None:
+            console.print("notify skipped: payload/config did not produce a notify event")
             log_event(
                 "notify.skipped",
-                reason="message-none",
+                reason="event-none",
                 session=resolved_session,
                 channel_id=resolved_channel_id,
             )
             return
         service = NotificationService()
-        results = service.send(message, notify_config)
+        results = service.send(event, routes, notify_config)
         if not results:
-            console.print("notify skipped: no notifier providers resolved")
+            console.print("notify skipped: no notifier routes resolved")
             log_event(
                 "notify.skipped",
-                reason="no-providers",
-                session=resolved_session or message.session,
-                channel_id=resolved_channel_id or message.channel_id,
+                reason="no-routes",
+                session=resolved_session or event.session,
+                channel_id=resolved_channel_id,
             )
             return
         has_failure = False
@@ -497,8 +522,8 @@ def notify_discord_hidden(
                 provider=result.provider,
                 ok=result.ok,
                 detail=result.detail,
-                session=resolved_session or message.session,
-                channel_id=resolved_channel_id or message.channel_id,
+                session=resolved_session or event.session,
+                channel_id=result.target or resolved_channel_id,
             )
         if has_failure:
             raise typer.Exit(code=1)

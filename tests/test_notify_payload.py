@@ -80,17 +80,13 @@ def test_build_message_from_payload_prefers_explicit_values():
         notify_config=NotifyConfig(),
         runtime_config={"discord_channel_id": "111", "session": "runtime-session", "cwd": "/runtime"},
         summary_loader=lambda session: "",
-        explicit_channel_id="222",
         explicit_session="explicit-session",
     )
 
     assert message is not None
-    assert message.channel_id == "222"
     assert message.session == "explicit-session"
-    assert "**Done**" in message.content
-    assert "- fixed it" in message.content
-    assert "cwd: `/repo`" in message.content
-    assert "session: `explicit-session`" in message.content
+    assert message.cwd == "/repo"
+    assert message.summary == "**Done**\n\n- fixed it"
 
 
 def test_build_message_from_payload_uses_summary_loader_and_failure_prefix():
@@ -104,8 +100,7 @@ def test_build_message_from_payload_uses_summary_loader_and_failure_prefix():
 
     assert message is not None
     assert message.status == "failure"
-    assert "[failure]" in message.content
-    assert "Recovered summary" in message.content
+    assert message.summary == "Recovered summary"
 
 
 def test_build_message_from_payload_skips_unsupported_event():
@@ -119,7 +114,7 @@ def test_build_message_from_payload_skips_unsupported_event():
     assert message is None
 
 
-def test_build_message_from_payload_requires_channel():
+def test_build_message_from_payload_does_not_require_route_target():
     message = build_message_from_payload(
         '{"event":"turn-complete","summary":"done"}',
         notify_config=NotifyConfig(),
@@ -127,7 +122,8 @@ def test_build_message_from_payload_requires_channel():
         summary_loader=lambda session: "",
     )
 
-    assert message is None
+    assert message is not None
+    assert message.summary == "done"
 
 
 def test_build_message_from_payload_reads_nested_payload_fields():
@@ -143,7 +139,7 @@ def test_build_message_from_payload_reads_nested_payload_fields():
     )
 
     assert message is not None
-    assert message.content == "Nested summary"
+    assert message.summary == "Nested summary"
     assert message.session == "nested-session"
 
 
@@ -156,7 +152,7 @@ def test_build_message_from_payload_uses_second_nested_event_source():
     )
 
     assert message is not None
-    assert message.content == "Nested summary"
+    assert message.summary == "Nested summary"
 
 
 def test_build_message_from_payload_uses_default_prefix_when_summary_is_blank():
@@ -168,7 +164,7 @@ def test_build_message_from_payload_uses_default_prefix_when_summary_is_blank():
     )
 
     assert message is not None
-    assert message.content == "Codex turn complete"
+    assert message.summary == "Codex turn complete"
 
 
 def test_build_message_from_payload_returns_none_for_invalid_payload_text():

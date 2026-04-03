@@ -5,7 +5,7 @@ import re
 from typing import Any, Callable, Mapping, Optional
 
 from .config import NotifyConfig
-from .models import Message
+from .models import NotifyEvent
 
 SUPPORTED_EVENTS = {
     "",
@@ -211,32 +211,20 @@ def _payload_cwd(payload: Mapping[str, Any]) -> str:
     return _first_string(payload.get("cwd"), _payload_value(payload, ("payload", "cwd")))
 
 
-def _channel_id(explicit_channel_id: str, runtime_config: Mapping[str, Any]) -> str:
-    value = _first_string(
-        explicit_channel_id,
-        runtime_config.get("discord_channel_id"),
-        runtime_config.get("codex_turn_complete_channel_id"),
-    )
-    return re.sub(r"\s+", "", value)
-
-
 def build_message_from_payload(
     payload_text: str,
     *,
     notify_config: NotifyConfig,
     runtime_config: Mapping[str, Any],
     summary_loader: Callable[[str], str],
-    explicit_channel_id: str = "",
     explicit_session: str = "",
     status: str = "success",
-) -> Optional[Message]:
+) -> Optional[NotifyEvent]:
     payload = parse_payload(payload_text)
     if payload is None:
         return None
-    if _event_name(payload) not in SUPPORTED_EVENTS:
-        return None
-    channel_id = _channel_id(explicit_channel_id, runtime_config)
-    if not channel_id:
+    event_name = _event_name(payload)
+    if event_name not in SUPPORTED_EVENTS:
         return None
     session = _first_string(explicit_session, _payload_session(payload), runtime_config.get("session"))
     cwd = _first_string(_payload_cwd(payload), runtime_config.get("cwd"))
@@ -247,21 +235,13 @@ def build_message_from_payload(
         assistant_message,
         max_chars=notify_config.summary_max_chars,
     )
-    content = assistant_summary or notify_config.default_message_prefix
+    summary = assistant_summary or notify_config.default_message_prefix
     normalized_status = status.strip().lower() or "success"
-    if normalized_status != "success":
-        content = f"[{normalized_status}] {content}"
-    mention_user_id = notify_config.discord.mention_user_id.strip()
-    if mention_user_id:
-        content = f"<@{mention_user_id}> {content}"
-    if notify_config.include_cwd and cwd:
-        content += f"\ncwd: `{cwd}`"
-    if notify_config.include_session and session:
-        content += f"\nsession: `{session}`"
-    content = content[: notify_config.max_message_chars]
-    return Message(
-        content=content,
-        channel_id=channel_id,
+    return NotifyEvent(
+        event=event_name or "turn-complete",
+        summary=summary,
         session=session,
+        cwd=cwd,
         status=normalized_status,
+        metadata={},
     )

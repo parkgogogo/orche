@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import re
 from typing import Any, Callable, Mapping, Sequence
 
 from .config import load_notify_config
 from .http import HTTPClient
-from .models import DeliveryResult, Message
+from .models import DeliveryResult, NotifyEvent, ResolvedRoute
 from .payload import build_message_from_payload
 from .registry import DEFAULT_REGISTRY, NotifierRegistry
 
@@ -20,20 +21,82 @@ class NotificationService:
         self.registry = registry or DEFAULT_REGISTRY
         self.http_client = http_client
 
-    def send(self, message: Message, config) -> Sequence[DeliveryResult]:
-        notifiers = self.registry.create_many(config, http_client=self.http_client)
-        if not notifiers:
+    def send(
+        self,
+        event: NotifyEvent,
+        routes: Sequence[ResolvedRoute],
+        config,
+    ) -> Sequence[DeliveryResult]:
+        if not routes:
             return ()
+        notifiers = {
+            notifier.name: notifier
+            for notifier in self.registry.create_many(config, http_client=self.http_client)
+        }
         results: list[DeliveryResult] = []
-        with ThreadPoolExecutor(max_workers=max(1, len(notifiers))) as executor:
-            future_map = {executor.submit(notifier.send, message): notifier.name for notifier in notifiers}
+        with ThreadPoolExecutor(max_workers=max(1, len(routes))) as executor:
+            future_map = {}
+            for route in routes:
+                notifier = notifiers.get(route.provider)
+                if notifier is None:
+                    supported = ", ".join(sorted(notifiers))
+                    results.append(
+                        DeliveryResult(
+                            provider=route.provider,
+                            ok=False,
+                            detail=f"Unsupported notifier: {route.provider}. Supported notifiers: {supported}",
+                            target=route.target,
+                        )
+                    )
+                    continue
+                future = executor.submit(notifier.send, event, route)
+                future_map[future] = route
             for future in as_completed(future_map):
-                provider = future_map[future]
+                route = future_map[future]
                 try:
                     results.append(future.result())
                 except Exception as exc:
-                    results.append(DeliveryResult(provider=provider, ok=False, detail=str(exc)))
-        return tuple(sorted(results, key=lambda result: result.provider))
+                    results.append(
+                        DeliveryResult(
+                            provider=route.provider,
+                            ok=False,
+                            detail=str(exc),
+                            target=route.target,
+                        )
+                    )
+        return tuple(sorted(results, key=lambda result: (result.provider, result.target)))
+
+
+def resolve_routes(
+    *,
+    event: NotifyEvent,
+    runtime_config: Mapping[str, Any],
+    notify_config,
+    explicit_channel_id: str = "",
+) -> Sequence[ResolvedRoute]:
+    routes: list[ResolvedRoute] = []
+    normalized_channel_id = re.sub(
+        r"\s+",
+        "",
+        str(
+            explicit_channel_id
+            or runtime_config.get("discord_channel_id")
+            or runtime_config.get("codex_turn_complete_channel_id")
+            or ""
+        ),
+    )
+    for provider in notify_config.providers:
+        if provider == "discord" and normalized_channel_id:
+            routes.append(
+                ResolvedRoute(
+                    provider=provider,
+                    target=normalized_channel_id,
+                    session=event.session,
+                )
+            )
+        elif provider != "discord":
+            routes.append(ResolvedRoute(provider=provider, session=event.session))
+    return tuple(routes)
 
 
 def dispatch_payload(
@@ -50,16 +113,23 @@ def dispatch_payload(
     notify_config = load_notify_config(runtime_config, env=env)
     if not notify_config.enabled:
         return ()
-    message = build_message_from_payload(
+    event = build_message_from_payload(
         payload_text,
         notify_config=notify_config,
         runtime_config=runtime_config,
         summary_loader=summary_loader,
-        explicit_channel_id=explicit_channel_id,
         explicit_session=explicit_session,
         status=status,
     )
-    if message is None:
+    if event is None:
+        return ()
+    routes = resolve_routes(
+        event=event,
+        runtime_config=runtime_config,
+        notify_config=notify_config,
+        explicit_channel_id=explicit_channel_id,
+    )
+    if not routes:
         return ()
     notifier_service = service or NotificationService()
-    return notifier_service.send(message, notify_config)
+    return notifier_service.send(event, routes, notify_config)
