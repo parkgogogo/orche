@@ -75,11 +75,15 @@ def resolve_routes(
     explicit_channel_id: str = "",
 ) -> Sequence[ResolvedRoute]:
     routes: list[ResolvedRoute] = []
+    configured_routes = runtime_config.get("notify_routes")
+    provider_routes = configured_routes if isinstance(configured_routes, Mapping) else {}
+    discord_route = provider_routes.get("discord") if isinstance(provider_routes.get("discord"), Mapping) else {}
     normalized_channel_id = re.sub(
         r"\s+",
         "",
         str(
             explicit_channel_id
+            or discord_route.get("channel_id")
             or runtime_config.get("discord_channel_id")
             or runtime_config.get("codex_turn_complete_channel_id")
             or ""
@@ -95,7 +99,22 @@ def resolve_routes(
                 )
             )
         elif provider != "discord":
-            routes.append(ResolvedRoute(provider=provider, session=event.session))
+            provider_route = provider_routes.get(provider)
+            route_payload = provider_route if isinstance(provider_route, Mapping) else {}
+            target = str(
+                route_payload.get("target")
+                or route_payload.get("target_session")
+                or route_payload.get("session")
+                or ""
+            ).strip()
+            routes.append(
+                ResolvedRoute(
+                    provider=provider,
+                    target=target,
+                    session=event.session,
+                    metadata=dict(route_payload),
+                )
+            )
     return tuple(routes)
 
 

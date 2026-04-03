@@ -32,7 +32,7 @@ def test_notify_hidden_command_reads_stdin_and_sends_message(xdg_runtime, monkey
 
     result = CliRunner().invoke(
         app,
-        ["_notify-discord"],
+        ["_notify"],
         input='{"event":"turn-complete","summary":"Done"}',
     )
 
@@ -58,7 +58,7 @@ def test_notify_hidden_command_verbose_prints_config_and_event(xdg_runtime, monk
 
     result = CliRunner().invoke(
         app,
-        ["_notify-discord", "--verbose"],
+        ["_notify", "--verbose"],
         input='{"event":"turn-complete","summary":"Done"}',
     )
 
@@ -89,7 +89,7 @@ def test_notify_hidden_command_failure_prints_error_and_returns_nonzero(xdg_runt
 
     result = CliRunner().invoke(
         app,
-        ["_notify-discord"],
+        ["_notify"],
         input='{"event":"turn-complete","summary":"Done"}',
     )
 
@@ -128,9 +128,62 @@ def test_notify_hidden_command_prefers_session_meta_channel_over_global_config(x
 
     result = CliRunner().invoke(
         app,
-        ["_notify-discord", "--session", "repo-codex-main"],
+        ["_notify", "--session", "repo-codex-main"],
         input='{"event":"turn-complete","summary":"Done"}',
     )
 
     assert result.exit_code == 0
     assert fake_client.requests[0]["url"].endswith("/channels/1111111111/messages")
+
+
+def test_notify_hidden_command_uses_session_notify_routes_for_tmux_bridge(xdg_runtime, monkeypatch):
+    captured = []
+    write_runtime_config(
+        xdg_runtime["config_path"],
+        {
+            "notify_enabled": True,
+            "notify_targets": ["tmux-bridge"],
+            "session": "other-session",
+            "cwd": "/tmp/other",
+        },
+    )
+
+    from backend import save_meta
+
+    save_meta(
+        "repo-codex-main",
+        {
+            "session": "repo-codex-main",
+            "cwd": "/tmp/repo",
+            "agent": "codex",
+            "pane_id": "%1",
+            "notify_routes": {
+                "tmux-bridge": {
+                    "target_session": "target-session",
+                }
+            },
+        },
+    )
+
+    monkeypatch.setattr(
+        "notify.tmux_bridge.bridge_resolve",
+        lambda session: "%2" if session == "target-session" else None,
+    )
+    monkeypatch.setattr(
+        "notify.tmux_bridge.bridge_type",
+        lambda session, text: captured.append(("type", session, text)),
+    )
+    monkeypatch.setattr(
+        "notify.tmux_bridge.bridge_keys",
+        lambda session, keys: captured.append(("keys", session, list(keys))),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["_notify", "--session", "repo-codex-main"],
+        input='{"event":"turn-complete","summary":"Done"}',
+    )
+
+    assert result.exit_code == 0
+    assert "notify ok: provider=tmux-bridge detail=delivered" in result.output
+    assert captured[0][1] == "target-session"

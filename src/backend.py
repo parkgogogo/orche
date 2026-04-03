@@ -56,7 +56,6 @@ SOURCE_CONFIG_LOCK_NAME = "codex-source-config"
 SOURCE_CONFIG_BACKUP_SUFFIX = ".orche.bak"
 CONFIG_KEY_MAP = {
     "discord.bot-token": "discord_bot_token",
-    "discord.channel-id": "discord_channel_id",
     "discord.mention-user-id": "notify_mention_user_id",
     "discord.webhook-url": "discord_webhook_url",
     "notify.enabled": "notify_enabled",
@@ -593,6 +592,89 @@ def load_meta(session: str) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _normalize_notify_routes(routes: Any) -> Dict[str, Dict[str, str]]:
+    if not isinstance(routes, dict):
+        return {}
+    normalized: Dict[str, Dict[str, str]] = {}
+    for provider, payload in routes.items():
+        provider_name = str(provider).strip()
+        if not provider_name or not isinstance(payload, dict):
+            continue
+        route_payload = {
+            str(key).strip(): str(value).strip()
+            for key, value in payload.items()
+            if str(key).strip() and str(value).strip()
+        }
+        if route_payload:
+            normalized[provider_name] = route_payload
+    return normalized
+
+
+def list_notify_routes(session: str) -> Dict[str, Dict[str, str]]:
+    _cwd, _agent, meta = resolve_session_context(session=session, require_existing=True)
+    routes = _normalize_notify_routes(meta.get("notify_routes"))
+    discord_channel_id = str(meta.get("discord_channel_id") or "").strip()
+    discord_session = str(meta.get("discord_session") or "").strip()
+    if discord_channel_id:
+        route = dict(routes.get("discord") or {})
+        route["channel_id"] = validate_discord_channel_id(discord_channel_id)
+        route["session"] = discord_session or derive_discord_session(discord_channel_id)
+        routes["discord"] = route
+    return routes
+
+
+def set_notify_route(
+    session: str,
+    provider: str,
+    *,
+    channel_id: str = "",
+    target_session: str = "",
+) -> Dict[str, Dict[str, str]]:
+    provider_name = provider.strip()
+    if not provider_name:
+        raise OrcheError("provider is required")
+    with session_lock(session):
+        _cwd, _agent, meta = resolve_session_context(session=session, require_existing=True)
+        routes = _normalize_notify_routes(meta.get("notify_routes"))
+        if provider_name == "discord":
+            normalized_channel_id = validate_discord_channel_id(channel_id)
+            routes["discord"] = {
+                "channel_id": normalized_channel_id,
+                "session": derive_discord_session(normalized_channel_id),
+            }
+            meta["discord_channel_id"] = normalized_channel_id
+            meta["discord_session"] = derive_discord_session(normalized_channel_id)
+        elif provider_name == "tmux-bridge":
+            normalized_target_session = target_session.strip()
+            if not normalized_target_session:
+                raise OrcheError("tmux-bridge route requires --target-session")
+            routes["tmux-bridge"] = {"target_session": normalized_target_session}
+        else:
+            raise OrcheError(f"Unsupported notify route provider: {provider_name}")
+        meta["notify_routes"] = routes
+        save_meta(session, meta)
+        return routes
+
+
+def clear_notify_route(session: str, provider: str) -> Dict[str, Dict[str, str]]:
+    provider_name = provider.strip()
+    if not provider_name:
+        raise OrcheError("provider is required")
+    with session_lock(session):
+        _cwd, _agent, meta = resolve_session_context(session=session, require_existing=True)
+        routes = _normalize_notify_routes(meta.get("notify_routes"))
+        routes.pop(provider_name, None)
+        if provider_name == "discord":
+            meta["discord_channel_id"] = ""
+            meta["discord_session"] = ""
+        if routes:
+            meta["notify_routes"] = routes
+        else:
+            meta.pop("notify_routes", None)
+        save_meta(session, meta)
+        return routes
+
+
 def remove_meta(session: str) -> None:
     path = meta_path(session)
     if path.exists():
@@ -697,11 +779,6 @@ def config_key_field(key: str) -> str:
 
 def get_config_value(key: str) -> str:
     config = load_config()
-    if key == "discord.channel-id":
-        value = str(config.get("discord_channel_id") or config.get("codex_turn_complete_channel_id") or "").strip()
-        if value:
-            return validate_discord_channel_id(value)
-        return ""
     field = config_key_field(key)
     value = config.get(field)
     if key == "notify.enabled":
@@ -713,12 +790,7 @@ def set_config_value(key: str, value: str) -> Dict[str, Any]:
     config = load_config()
     field = config_key_field(key)
     normalized = value
-    if key == "discord.channel-id":
-        normalized = validate_discord_channel_id(value)
-        config["codex_turn_complete_channel_id"] = normalized
-        config["discord_channel_id"] = normalized
-        config["discord_session"] = derive_discord_session(normalized)
-    elif key == "notify.enabled":
+    if key == "notify.enabled":
         lowered = value.strip().lower()
         if lowered in {"1", "true", "yes", "on"}:
             normalized = True
@@ -756,6 +828,12 @@ def update_runtime_config(
         normalized_channel_id = validate_discord_channel_id(discord_channel_id)
         config["codex_turn_complete_channel_id"] = normalized_channel_id
         config["discord_channel_id"] = normalized_channel_id
+        routes = _normalize_notify_routes(config.get("notify_routes"))
+        routes["discord"] = {
+            "channel_id": normalized_channel_id,
+            "session": derive_discord_session(normalized_channel_id),
+        }
+        config["notify_routes"] = routes
     config["session"] = session
     if discord_session:
         config["discord_session"] = discord_session
@@ -1088,6 +1166,12 @@ def ensure_session(
         or str(existing_meta.get("discord_session") or "")
         or (derive_discord_session(resolved_discord_channel_id) if resolved_discord_channel_id else "")
     )
+    notify_routes = _normalize_notify_routes(existing_meta.get("notify_routes"))
+    if resolved_discord_channel_id:
+        notify_routes["discord"] = {
+            "channel_id": resolved_discord_channel_id,
+            "session": resolved_discord_session,
+        }
     managed_codex_home = False
     if codex_home:
         resolved_codex_home = normalize_codex_home(codex_home)
@@ -1138,6 +1222,7 @@ def ensure_session(
             "codex_home_managed": managed_codex_home,
             "discord_channel_id": resolved_discord_channel_id,
             "discord_session": resolved_discord_session,
+            "notify_routes": notify_routes,
             "last_seen_at": time.time(),
         }
     )
@@ -1224,6 +1309,7 @@ def build_status(session: str) -> Dict[str, Any]:
     discord_channel_id = str(meta.get("discord_channel_id") or "").strip()
     if not discord_session and discord_channel_id.isdigit():
         discord_session = derive_discord_session(discord_channel_id)
+    notify_routes = list_notify_routes(session) if meta else {}
     return {
         "backend": BACKEND,
         "session": session,
@@ -1236,6 +1322,7 @@ def build_status(session: str) -> Dict[str, Any]:
         "codex_running": bool(pane_id and is_codex_running(pane_id)),
         "pane_exists": bool(pane_id and pane_exists(pane_id)),
         "discord_session": discord_session,
+        "notify_routes": notify_routes,
     }
 
 

@@ -149,11 +149,18 @@ def test_resolve_routes_includes_non_discord_providers_without_target():
 
     routes = resolve_routes(
         event=event,
-        runtime_config={},
+        runtime_config={"notify_routes": {"tmux-bridge": {"target_session": "target-session"}}},
         notify_config=NotifyConfig(providers=("tmux-bridge",)),
     )
 
-    assert routes == (ResolvedRoute(provider="tmux-bridge", session="demo"),)
+    assert routes == (
+        ResolvedRoute(
+            provider="tmux-bridge",
+            target="target-session",
+            session="demo",
+            metadata={"target_session": "target-session"},
+        ),
+    )
 
 
 def test_resolve_routes_skips_discord_without_channel_target():
@@ -166,6 +173,18 @@ def test_resolve_routes_skips_discord_without_channel_target():
     )
 
     assert routes == (ResolvedRoute(provider="tmux-bridge", session="demo"),)
+
+
+def test_resolve_routes_prefers_notify_routes_discord_channel():
+    event = NotifyEvent(event="turn-complete", summary="done", session="demo", status="success")
+
+    routes = resolve_routes(
+        event=event,
+        runtime_config={"notify_routes": {"discord": {"channel_id": "789"}}},
+        notify_config=NotifyConfig(providers=("discord",)),
+    )
+
+    assert routes == (ResolvedRoute(provider="discord", target="789", session="demo"),)
 
 
 def test_dispatch_payload_returns_empty_when_event_has_no_routes():

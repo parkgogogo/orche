@@ -46,11 +46,11 @@ Use `orche config` to manage runtime settings:
 
 ```bash
 orche config list
-orche config get discord.channel-id
-orche config set discord.channel-id "123"
 orche config set discord.bot-token "$TOKEN"
 orche config set discord.mention-user-id "123"
 orche config set notify.enabled true
+orche notify route set --session repo-codex-main --provider discord --channel-id "123"
+orche notify route set --session repo-codex-main --provider tmux-bridge --target-session repo-codex-reviewer
 ```
 
 Config path:

@@ -135,11 +135,18 @@ Manage runtime settings:
 
 ```bash
 orche config list
-orche config get discord.channel-id
-orche config set discord.channel-id 123456789012345678
 orche config set discord.bot-token "$BOT_TOKEN"
 orche config set discord.mention-user-id 123456789012345678
 orche config set notify.enabled true
+```
+
+Manage session-specific notify routes:
+
+```bash
+orche notify route set --session repo-codex-main --provider discord --channel-id 123456789012345678
+orche notify route set --session repo-codex-main --provider tmux-bridge --target-session repo-codex-reviewer
+orche notify route list --session repo-codex-main
+orche notify route clear --session repo-codex-main --provider discord
 ```
 
 Config file:

@@ -128,6 +128,79 @@ def test_config_supports_discord_mention_user_id(xdg_runtime):
     assert "123456" in list_result.stdout
 
 
+def test_config_rejects_discord_channel_id_shortcut(xdg_runtime):
+    runner = CliRunner()
+
+    set_result = runner.invoke(app, ["config", "set", "discord.channel-id", "123456"])
+    get_result = runner.invoke(app, ["config", "get", "discord.channel-id"])
+    list_result = runner.invoke(app, ["config", "list"])
+
+    assert set_result.exit_code == 1
+    assert "Unsupported config key: discord.channel-id" in set_result.stdout
+    assert get_result.exit_code == 1
+    assert "Unsupported config key: discord.channel-id" in get_result.stdout
+    assert list_result.exit_code == 0
+    assert "discord.channel-id" not in list_result.stdout
+
+
+def test_notify_route_commands_set_list_and_clear_routes(xdg_runtime):
+    backend.save_meta(
+        "demo-session",
+        {
+            "session": "demo-session",
+            "cwd": "/repo/demo",
+            "agent": "codex",
+            "pane_id": "%1",
+        },
+    )
+    runner = CliRunner()
+
+    set_discord = runner.invoke(
+        app,
+        [
+            "notify",
+            "route",
+            "set",
+            "--session",
+            "demo-session",
+            "--provider",
+            "discord",
+            "--channel-id",
+            "1234567890",
+        ],
+    )
+    set_tmux = runner.invoke(
+        app,
+        [
+            "notify",
+            "route",
+            "set",
+            "--session",
+            "demo-session",
+            "--provider",
+            "tmux-bridge",
+            "--target-session",
+            "target-session",
+        ],
+    )
+    list_result = runner.invoke(app, ["notify", "route", "list", "--session", "demo-session"])
+    clear_result = runner.invoke(
+        app,
+        ["notify", "route", "clear", "--session", "demo-session", "--provider", "discord"],
+    )
+
+    assert set_discord.exit_code == 0
+    assert "1234567890" in set_discord.stdout
+    assert set_tmux.exit_code == 0
+    assert "target-session" in set_tmux.stdout
+    assert list_result.exit_code == 0
+    assert "discord" in list_result.stdout
+    assert "tmux-bridge" in list_result.stdout
+    assert clear_result.exit_code == 0
+    assert "discord" not in clear_result.stdout
+    assert "target-session" in clear_result.stdout
+
+
 def test_build_status_uses_session_metadata_discord_session(xdg_runtime):
     backend.save_meta(
         "demo-session",

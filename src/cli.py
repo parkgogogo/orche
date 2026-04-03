@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -32,10 +33,13 @@ from backend import (
     list_sessions,
     list_config_values,
     latest_turn_summary,
+    list_notify_routes,
     log_event,
     log_exception,
     resolve_session_context,
+    clear_notify_route,
     send_prompt,
+    set_notify_route,
     set_config_value,
 )
 from notify import (
@@ -57,8 +61,12 @@ app = typer.Typer(
     add_completion=False,
 )
 config_app = typer.Typer(help="Manage orche runtime configuration.")
+notify_app = typer.Typer(help="Manage notify delivery and routing.")
+notify_route_app = typer.Typer(help="Manage session notify routes.")
 sessions_app = typer.Typer(help="Manage stored sessions.")
 app.add_typer(config_app, name="config")
+app.add_typer(notify_app, name="notify")
+notify_app.add_typer(notify_route_app, name="route")
 app.add_typer(sessions_app, name="sessions")
 console = Console()
 stderr = Console(stderr=True)
@@ -98,6 +106,9 @@ def _print_notify_verbose(
         f"{channel_id or runtime_config.get('discord_channel_id') or '-'}"
     )
     console.print(f"  runtime.session: {session or runtime_config.get('session') or '-'}")
+    notify_routes = runtime_config.get("notify_routes")
+    if isinstance(notify_routes, dict):
+        console.print(f"  runtime.notify_routes: {json.dumps(notify_routes, ensure_ascii=False)}")
     console.print(f"  payload_bytes: {len(payload_text.encode('utf-8'))}")
     parsed_payload = parse_payload(payload_text)
     if parsed_payload is None:
@@ -146,6 +157,7 @@ def _notify_runtime_config(runtime_config: dict, session: str) -> dict:
         "codex_home_managed",
         "discord_channel_id",
         "discord_session",
+        "notify_routes",
     ):
         value = meta.get(key)
         if value not in (None, ""):
@@ -237,7 +249,37 @@ def _render_status(info: dict) -> None:
     if info.get("discord_session"):
         body.append("\nDiscord session: ", style="bold cyan")
         body.append(str(info["discord_session"]))
+    notify_routes = info.get("notify_routes")
+    if isinstance(notify_routes, dict) and notify_routes:
+        body.append("\nNotify routes: ", style="bold cyan")
+        body.append(json.dumps(notify_routes, ensure_ascii=False))
     console.print(Panel.fit(body, title="orche status", border_style="blue"))
+
+
+def _render_notify_routes(session: str, routes: dict) -> None:
+    if not routes:
+        console.print(f"No notify routes configured for {session}")
+        return
+    table = Table(title=f"notify routes: {session}")
+    table.add_column("Provider", style="cyan")
+    table.add_column("Target", style="white")
+    table.add_column("Detail", style="white")
+    for provider, payload in sorted(routes.items()):
+        if provider == "discord":
+            table.add_row(
+                provider,
+                str(payload.get("channel_id") or "-"),
+                str(payload.get("session") or "-"),
+            )
+        elif provider == "tmux-bridge":
+            table.add_row(
+                provider,
+                str(payload.get("target_session") or "-"),
+                "-",
+            )
+        else:
+            table.add_row(provider, "-", json.dumps(payload, ensure_ascii=False))
+    console.print(table)
 
 
 @app.callback(invoke_without_command=True)
@@ -290,6 +332,47 @@ def config_list() -> None:
         for key, value in list_config_values().items():
             table.add_row(key, value)
         console.print(table)
+    except (OrcheError, subprocess.CalledProcessError) as exc:
+        _handle_error(exc)
+
+
+@notify_route_app.command("list")
+def notify_route_list(
+    session: str = typer.Option(..., "--session", help="Session name."),
+) -> None:
+    try:
+        _render_notify_routes(session, list_notify_routes(session))
+    except (OrcheError, subprocess.CalledProcessError) as exc:
+        _handle_error(exc)
+
+
+@notify_route_app.command("set")
+def notify_route_set(
+    session: str = typer.Option(..., "--session", help="Session name."),
+    provider: str = typer.Option(..., "--provider", help="Route provider name."),
+    channel_id: Optional[str] = typer.Option(None, "--channel-id", help="Discord channel ID."),
+    target_session: Optional[str] = typer.Option(None, "--target-session", help="Target tmux-bridge session."),
+) -> None:
+    try:
+        routes = set_notify_route(
+            session,
+            provider,
+            channel_id=channel_id or "",
+            target_session=target_session or "",
+        )
+        _render_notify_routes(session, routes)
+    except (OrcheError, subprocess.CalledProcessError) as exc:
+        _handle_error(exc)
+
+
+@notify_route_app.command("clear")
+def notify_route_clear(
+    session: str = typer.Option(..., "--session", help="Session name."),
+    provider: str = typer.Option(..., "--provider", help="Route provider name."),
+) -> None:
+    try:
+        routes = clear_notify_route(session, provider)
+        _render_notify_routes(session, routes)
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)
 
@@ -433,8 +516,8 @@ def turn_summary_hidden(
     turn_summary(session=session)
 
 
-@app.command("_notify-discord", hidden=True)
-def notify_discord_hidden(
+@app.command("_notify", hidden=True)
+def notify_hidden(
     payload: Optional[str] = typer.Argument(None, help="Optional JSON payload. If omitted, stdin is used."),
     session: Optional[str] = typer.Option(None, "--session", help="Explicit session override."),
     channel_id: Optional[str] = typer.Option(None, "--channel-id", help="Explicit Discord channel override."),
@@ -533,6 +616,23 @@ def notify_discord_hidden(
         stderr.print(f"notify error: {exc}")
         log_exception("notify.error", exc)
         raise typer.Exit(code=1)
+
+
+@app.command("_notify-discord", hidden=True)
+def notify_discord_hidden(
+    payload: Optional[str] = typer.Argument(None, help="Optional JSON payload. If omitted, stdin is used."),
+    session: Optional[str] = typer.Option(None, "--session", help="Explicit session override."),
+    channel_id: Optional[str] = typer.Option(None, "--channel-id", help="Explicit Discord channel override."),
+    status: str = typer.Option("success", "--status", help="Delivery status label."),
+    verbose: bool = typer.Option(False, "--verbose", help="Print config, payload, and delivery details."),
+) -> None:
+    notify_hidden(
+        payload=payload,
+        session=session,
+        channel_id=channel_id,
+        status=status,
+        verbose=verbose,
+    )
 
 
 @app.command("history")
