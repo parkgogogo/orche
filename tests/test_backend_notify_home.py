@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 import backend
 from notify_hook import NOTIFY_DISCORD_SH
 
@@ -264,6 +266,57 @@ def test_ensure_session_rejects_rebinding_session_to_different_cwd(xdg_runtime, 
         assert "already bound to cwd=" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("expected OrcheError for cwd mismatch")
+
+
+def test_ensure_session_rejects_rebinding_discord_channel(xdg_runtime, tmp_path, monkeypatch):
+    source_home = tmp_path / "source-codex"
+    source_home.mkdir()
+    (source_home / "hooks").mkdir()
+    (source_home / "config.toml").write_text('model = "gpt-5"\n', encoding="utf-8")
+
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", source_home)
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%1")
+    monkeypatch.setattr(backend, "ensure_codex_running", lambda *args, **kwargs: "%1")
+
+    backend.ensure_session("notify-bound", tmp_path, "codex", discord_channel_id="123")
+
+    with pytest.raises(backend.OrcheError, match="already bound to discord_channel_id=123"):
+        backend.ensure_session("notify-bound", tmp_path, "codex", discord_channel_id="456")
+
+
+def test_ensure_session_rejects_adding_tmux_target_after_creation(xdg_runtime, tmp_path, monkeypatch):
+    source_home = tmp_path / "source-codex"
+    source_home.mkdir()
+    (source_home / "hooks").mkdir()
+    (source_home / "config.toml").write_text('model = "gpt-5"\n', encoding="utf-8")
+
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", source_home)
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%1")
+    monkeypatch.setattr(backend, "ensure_codex_running", lambda *args, **kwargs: "%1")
+
+    backend.ensure_session("notify-bound", tmp_path, "codex")
+
+    with pytest.raises(backend.OrcheError, match="created without a tmux-bridge notify target"):
+        backend.ensure_session("notify-bound", tmp_path, "codex", tmux_bridge_target="target-session")
+
+
+def test_ensure_session_stores_tmux_bridge_target_in_notify_routes(xdg_runtime, tmp_path, monkeypatch):
+    source_home = tmp_path / "source-codex"
+    source_home.mkdir()
+    (source_home / "hooks").mkdir()
+    (source_home / "config.toml").write_text('model = "gpt-5"\n', encoding="utf-8")
+
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", source_home)
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%1")
+    monkeypatch.setattr(backend, "ensure_codex_running", lambda *args, **kwargs: "%1")
+
+    backend.ensure_session("notify-bound", tmp_path, "codex", tmux_bridge_target="target-session")
+    meta = backend.load_meta("notify-bound")
+
+    assert meta["notify_routes"]["tmux-bridge"]["target_session"] == "target-session"
 
 
 def test_close_session_removes_managed_codex_home(xdg_runtime, tmp_path, monkeypatch):

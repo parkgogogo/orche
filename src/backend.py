@@ -627,58 +627,6 @@ def list_notify_routes(session: str) -> Dict[str, Dict[str, str]]:
     return routes
 
 
-def set_notify_route(
-    session: str,
-    provider: str,
-    *,
-    channel_id: str = "",
-    target_session: str = "",
-) -> Dict[str, Dict[str, str]]:
-    provider_name = provider.strip()
-    if not provider_name:
-        raise OrcheError("provider is required")
-    with session_lock(session):
-        _cwd, _agent, meta = resolve_session_context(session=session, require_existing=True)
-        routes = _normalize_notify_routes(meta.get("notify_routes"))
-        if provider_name == "discord":
-            normalized_channel_id = validate_discord_channel_id(channel_id)
-            routes["discord"] = {
-                "channel_id": normalized_channel_id,
-                "session": derive_discord_session(normalized_channel_id),
-            }
-            meta["discord_channel_id"] = normalized_channel_id
-            meta["discord_session"] = derive_discord_session(normalized_channel_id)
-        elif provider_name == "tmux-bridge":
-            normalized_target_session = target_session.strip()
-            if not normalized_target_session:
-                raise OrcheError("tmux-bridge route requires --target-session")
-            routes["tmux-bridge"] = {"target_session": normalized_target_session}
-        else:
-            raise OrcheError(f"Unsupported notify route provider: {provider_name}")
-        meta["notify_routes"] = routes
-        save_meta(session, meta)
-        return routes
-
-
-def clear_notify_route(session: str, provider: str) -> Dict[str, Dict[str, str]]:
-    provider_name = provider.strip()
-    if not provider_name:
-        raise OrcheError("provider is required")
-    with session_lock(session):
-        _cwd, _agent, meta = resolve_session_context(session=session, require_existing=True)
-        routes = _normalize_notify_routes(meta.get("notify_routes"))
-        routes.pop(provider_name, None)
-        if provider_name == "discord":
-            meta["discord_channel_id"] = ""
-            meta["discord_session"] = ""
-        if routes:
-            meta["notify_routes"] = routes
-        else:
-            meta.pop("notify_routes", None)
-        save_meta(session, meta)
-        return routes
-
-
 def remove_meta(session: str) -> None:
     path = meta_path(session)
     if path.exists():
@@ -828,21 +776,7 @@ def update_runtime_config(
     config["_comment"] = CONFIG_COMMENT
     config.pop("orch_session", None)
     config.pop("parent_session_key", None)
-    if discord_channel_id:
-        normalized_channel_id = validate_discord_channel_id(discord_channel_id)
-        config["codex_turn_complete_channel_id"] = normalized_channel_id
-        config["discord_channel_id"] = normalized_channel_id
-        routes = _normalize_notify_routes(config.get("notify_routes"))
-        routes["discord"] = {
-            "channel_id": normalized_channel_id,
-            "session": derive_discord_session(normalized_channel_id),
-        }
-        config["notify_routes"] = routes
     config["session"] = session
-    if discord_session:
-        config["discord_session"] = discord_session
-    elif not config.get("discord_session") and str(config.get("codex_turn_complete_channel_id") or "").isdigit():
-        config["discord_session"] = derive_discord_session(str(config["codex_turn_complete_channel_id"]))
     config["cwd"] = str(cwd)
     config["agent"] = agent
     config["pane_id"] = pane_id
@@ -1189,6 +1123,7 @@ def ensure_session(
     codex_home: Optional[str] = None,
     discord_channel_id: Optional[str] = None,
     discord_session: Optional[str] = None,
+    tmux_bridge_target: Optional[str] = None,
 ) -> str:
     cwd = cwd.resolve()
     existing_meta = load_meta(session)
@@ -1198,17 +1133,49 @@ def ensure_session(
             f"Session {session} is already bound to cwd={existing_cwd}. "
             "Use the same --cwd or close the session and create a new one."
         )
-    resolved_discord_channel_id = discord_channel_id or str(existing_meta.get("discord_channel_id") or "")
+    existing_notify_routes = _normalize_notify_routes(existing_meta.get("notify_routes"))
+    existing_discord_channel_id = str(existing_meta.get("discord_channel_id") or "").strip()
+    provided_discord_channel_id = str(discord_channel_id or "").strip()
+    if existing_meta and provided_discord_channel_id != existing_discord_channel_id and provided_discord_channel_id:
+        if existing_discord_channel_id:
+            raise OrcheError(
+                f"Session {session} is already bound to discord_channel_id={existing_discord_channel_id}. "
+                "Use the same --discord-channel-id or close the session and create a new one."
+            )
+        raise OrcheError(
+            f"Session {session} was created without a discord notify target. "
+            "Close the session and create a new one to add --discord-channel-id."
+        )
+    resolved_discord_channel_id = existing_discord_channel_id or provided_discord_channel_id
     resolved_discord_session = (
         discord_session
         or str(existing_meta.get("discord_session") or "")
         or (derive_discord_session(resolved_discord_channel_id) if resolved_discord_channel_id else "")
     )
-    notify_routes = _normalize_notify_routes(existing_meta.get("notify_routes"))
+    existing_tmux_bridge_target = str(
+        (existing_notify_routes.get("tmux-bridge") or {}).get("target_session") or ""
+    ).strip()
+    provided_tmux_bridge_target = str(tmux_bridge_target or "").strip()
+    if existing_meta and provided_tmux_bridge_target != existing_tmux_bridge_target and provided_tmux_bridge_target:
+        if existing_tmux_bridge_target:
+            raise OrcheError(
+                f"Session {session} is already bound to tmux_bridge_target={existing_tmux_bridge_target}. "
+                "Use the same --tmux-bridge-target or close the session and create a new one."
+            )
+        raise OrcheError(
+            f"Session {session} was created without a tmux-bridge notify target. "
+            "Close the session and create a new one to add --tmux-bridge-target."
+        )
+    resolved_tmux_bridge_target = existing_tmux_bridge_target or provided_tmux_bridge_target
+    notify_routes = dict(existing_notify_routes)
     if resolved_discord_channel_id:
         notify_routes["discord"] = {
             "channel_id": resolved_discord_channel_id,
             "session": resolved_discord_session,
+        }
+    if resolved_tmux_bridge_target:
+        notify_routes["tmux-bridge"] = {
+            "target_session": resolved_tmux_bridge_target,
         }
     managed_codex_home = False
     if codex_home:

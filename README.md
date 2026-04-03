@@ -24,7 +24,8 @@ orche session-new \
   --cwd /path/to/repo \
   --agent codex \
   --name repo-codex-main \
-  --discord-channel-id 123456789012345678
+  --discord-channel-id 123456789012345678 \
+  --tmux-bridge-target repo-codex-reviewer
 ```
 
 Send work and return immediately:
@@ -76,7 +77,7 @@ pip install .
 
 ## Commands
 
-- `orche session-new --cwd /repo --agent codex --name repo-codex-main --discord-channel-id 123456789012345678`
+- `orche session-new --cwd /repo --agent codex --name repo-codex-main --discord-channel-id 123456789012345678 --tmux-bridge-target repo-codex-reviewer`
   Create or reuse a persistent Codex tmux session.
 - `orche send --session repo-codex-main "review the recent auth changes"`
   Send a task into an existing session and return immediately.
@@ -140,14 +141,18 @@ orche config set discord.mention-user-id 123456789012345678
 orche config set notify.enabled true
 ```
 
-Manage session-specific notify routes:
+Set notify targets when creating the session:
 
 ```bash
-orche notify route set --session repo-codex-main --provider discord --channel-id 123456789012345678
-orche notify route set --session repo-codex-main --provider tmux-bridge --target-session repo-codex-reviewer
-orche notify route list --session repo-codex-main
-orche notify route clear --session repo-codex-main --provider discord
+orche session-new \
+  --cwd /repo \
+  --agent codex \
+  --name repo-codex-main \
+  --discord-channel-id 123456789012345678 \
+  --tmux-bridge-target repo-codex-reviewer
 ```
+
+Notify targets are treated as session creation-time bindings. To change them, close the session and create a new one with the desired arguments.
 
 Config file:
 

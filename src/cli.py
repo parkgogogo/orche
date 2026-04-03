@@ -33,13 +33,10 @@ from backend import (
     list_sessions,
     list_config_values,
     latest_turn_summary,
-    list_notify_routes,
     log_event,
     log_exception,
     resolve_session_context,
-    clear_notify_route,
     send_prompt,
-    set_notify_route,
     set_config_value,
 )
 from notify import (
@@ -61,12 +58,8 @@ app = typer.Typer(
     add_completion=False,
 )
 config_app = typer.Typer(help="Manage orche runtime configuration.")
-notify_app = typer.Typer(help="Manage notify delivery and routing.")
-notify_route_app = typer.Typer(help="Manage session notify routes.")
 sessions_app = typer.Typer(help="Manage stored sessions.")
 app.add_typer(config_app, name="config")
-app.add_typer(notify_app, name="notify")
-notify_app.add_typer(notify_route_app, name="route")
 app.add_typer(sessions_app, name="sessions")
 console = Console()
 stderr = Console(stderr=True)
@@ -251,35 +244,9 @@ def _render_status(info: dict) -> None:
         body.append(str(info["discord_session"]))
     notify_routes = info.get("notify_routes")
     if isinstance(notify_routes, dict) and notify_routes:
-        body.append("\nNotify routes: ", style="bold cyan")
+        body.append("\nNotify bindings: ", style="bold cyan")
         body.append(json.dumps(notify_routes, ensure_ascii=False))
     console.print(Panel.fit(body, title="orche status", border_style="blue"))
-
-
-def _render_notify_routes(session: str, routes: dict) -> None:
-    if not routes:
-        console.print(f"No notify routes configured for {session}")
-        return
-    table = Table(title=f"notify routes: {session}")
-    table.add_column("Provider", style="cyan")
-    table.add_column("Target", style="white")
-    table.add_column("Detail", style="white")
-    for provider, payload in sorted(routes.items()):
-        if provider == "discord":
-            table.add_row(
-                provider,
-                str(payload.get("channel_id") or "-"),
-                str(payload.get("session") or "-"),
-            )
-        elif provider == "tmux-bridge":
-            table.add_row(
-                provider,
-                str(payload.get("target_session") or "-"),
-                "-",
-            )
-        else:
-            table.add_row(provider, "-", json.dumps(payload, ensure_ascii=False))
-    console.print(table)
 
 
 @app.callback(invoke_without_command=True)
@@ -336,47 +303,6 @@ def config_list() -> None:
         _handle_error(exc)
 
 
-@notify_route_app.command("list")
-def notify_route_list(
-    session: str = typer.Option(..., "--session", help="Session name."),
-) -> None:
-    try:
-        _render_notify_routes(session, list_notify_routes(session))
-    except (OrcheError, subprocess.CalledProcessError) as exc:
-        _handle_error(exc)
-
-
-@notify_route_app.command("set")
-def notify_route_set(
-    session: str = typer.Option(..., "--session", help="Session name."),
-    provider: str = typer.Option(..., "--provider", help="Route provider name."),
-    channel_id: Optional[str] = typer.Option(None, "--channel-id", help="Discord channel ID."),
-    target_session: Optional[str] = typer.Option(None, "--target-session", help="Target tmux-bridge session."),
-) -> None:
-    try:
-        routes = set_notify_route(
-            session,
-            provider,
-            channel_id=channel_id or "",
-            target_session=target_session or "",
-        )
-        _render_notify_routes(session, routes)
-    except (OrcheError, subprocess.CalledProcessError) as exc:
-        _handle_error(exc)
-
-
-@notify_route_app.command("clear")
-def notify_route_clear(
-    session: str = typer.Option(..., "--session", help="Session name."),
-    provider: str = typer.Option(..., "--provider", help="Route provider name."),
-) -> None:
-    try:
-        routes = clear_notify_route(session, provider)
-        _render_notify_routes(session, routes)
-    except (OrcheError, subprocess.CalledProcessError) as exc:
-        _handle_error(exc)
-
-
 @app.command("session-new")
 def session_new(
     cwd: Path = typer.Option(..., callback=_resolve_cwd, file_okay=False, dir_okay=True, resolve_path=False, help="Working directory for the Codex session."),
@@ -384,6 +310,7 @@ def session_new(
     name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-<agent>-main."),
     codex_home: Optional[Path] = typer.Option(None, "--codex-home", callback=_resolve_optional_path, resolve_path=False, help="Optional manual CODEX_HOME override. If omitted, orche manages /tmp/orche-codex-<session> automatically."),
     discord_channel_id: Optional[str] = typer.Option(None, "--discord-channel-id", help="Numeric Discord channel ID to send completion notifications back to."),
+    tmux_bridge_target: Optional[str] = typer.Option(None, "--tmux-bridge-target", help="Target session name for tmux-bridge notify delivery."),
 ) -> None:
     try:
         if agent != "codex":
@@ -395,6 +322,7 @@ def session_new(
             agent,
             codex_home=None if codex_home is None else str(codex_home),
             discord_channel_id=discord_channel_id,
+            tmux_bridge_target=tmux_bridge_target,
         )
         append_action_history(session, cwd.resolve(), agent, "session-new", pane_id=pane_id)
         console.print(session)

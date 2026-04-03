@@ -143,64 +143,6 @@ def test_config_rejects_discord_channel_id_shortcut(xdg_runtime):
     assert "discord.channel-id" not in list_result.stdout
 
 
-def test_notify_route_commands_set_list_and_clear_routes(xdg_runtime):
-    backend.save_meta(
-        "demo-session",
-        {
-            "session": "demo-session",
-            "cwd": "/repo/demo",
-            "agent": "codex",
-            "pane_id": "%1",
-        },
-    )
-    runner = CliRunner()
-
-    set_discord = runner.invoke(
-        app,
-        [
-            "notify",
-            "route",
-            "set",
-            "--session",
-            "demo-session",
-            "--provider",
-            "discord",
-            "--channel-id",
-            "1234567890",
-        ],
-    )
-    set_tmux = runner.invoke(
-        app,
-        [
-            "notify",
-            "route",
-            "set",
-            "--session",
-            "demo-session",
-            "--provider",
-            "tmux-bridge",
-            "--target-session",
-            "target-session",
-        ],
-    )
-    list_result = runner.invoke(app, ["notify", "route", "list", "--session", "demo-session"])
-    clear_result = runner.invoke(
-        app,
-        ["notify", "route", "clear", "--session", "demo-session", "--provider", "discord"],
-    )
-
-    assert set_discord.exit_code == 0
-    assert "1234567890" in set_discord.stdout
-    assert set_tmux.exit_code == 0
-    assert "target-session" in set_tmux.stdout
-    assert list_result.exit_code == 0
-    assert "discord" in list_result.stdout
-    assert "tmux-bridge" in list_result.stdout
-    assert clear_result.exit_code == 0
-    assert "discord" not in clear_result.stdout
-    assert "target-session" in clear_result.stdout
-
-
 def test_build_status_uses_session_metadata_discord_session(xdg_runtime):
     backend.save_meta(
         "demo-session",
@@ -237,7 +179,7 @@ def test_session_new_expands_cwd_user_home(xdg_runtime, monkeypatch):
     runner = CliRunner()
     project_dir = xdg_runtime["home"] / "project"
     project_dir.mkdir()
-    captured: dict[str, Path] = {}
+    captured = {}
 
     def fake_ensure_session(session, cwd, agent, **kwargs):
         captured["session"] = session
@@ -253,6 +195,42 @@ def test_session_new_expands_cwd_user_home(xdg_runtime, monkeypatch):
     assert result.exit_code == 0
     assert captured["cwd"] == project_dir.resolve()
     assert captured["agent"] == "codex"
+
+
+def test_session_new_passes_notify_targets(xdg_runtime, monkeypatch):
+    runner = CliRunner()
+    project_dir = xdg_runtime["home"] / "project"
+    project_dir.mkdir()
+    captured = {}
+
+    def fake_ensure_session(session, cwd, agent, **kwargs):
+        captured["session"] = session
+        captured["cwd"] = cwd
+        captured["agent"] = agent
+        captured["kwargs"] = kwargs
+        return "%1"
+
+    monkeypatch.setattr(cli, "ensure_session", fake_ensure_session)
+    monkeypatch.setattr(cli, "append_action_history", lambda *args, **kwargs: None)
+
+    result = runner.invoke(
+        app,
+        [
+            "session-new",
+            "--cwd",
+            "~/project",
+            "--agent",
+            "codex",
+            "--discord-channel-id",
+            "1234567890",
+            "--tmux-bridge-target",
+            "target-session",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["kwargs"]["discord_channel_id"] == "1234567890"
+    assert captured["kwargs"]["tmux_bridge_target"] == "target-session"
 
 
 def test_unknown_command_shows_clean_error(xdg_runtime, capsys, monkeypatch):

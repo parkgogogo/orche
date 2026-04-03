@@ -24,7 +24,8 @@ orche session-new \
   --cwd /path/to/repo \
   --agent codex \
   --name repo-codex-main \
-  --discord-channel-id 123456789012345678
+  --discord-channel-id 123456789012345678 \
+  --tmux-bridge-target repo-codex-reviewer
 ```
 
 发送任务并立即返回：
@@ -76,7 +77,7 @@ pip install .
 
 ## 命令
 
-- `orche session-new --cwd /repo --agent codex --name repo-codex-main --discord-channel-id 123456789012345678`
+- `orche session-new --cwd /repo --agent codex --name repo-codex-main --discord-channel-id 123456789012345678 --tmux-bridge-target repo-codex-reviewer`
   创建或复用一个持久化的 Codex tmux 会话。
 - `orche send --session repo-codex-main "review the recent auth changes"`
   向已有会话发送任务，并立即返回。
@@ -106,14 +107,18 @@ orche config set discord.mention-user-id 123456789012345678
 orche config set notify.enabled true
 ```
 
-管理 session 级 notify 路由：
+在创建 session 时指定 notify 目标：
 
 ```bash
-orche notify route set --session repo-codex-main --provider discord --channel-id 123456789012345678
-orche notify route set --session repo-codex-main --provider tmux-bridge --target-session repo-codex-reviewer
-orche notify route list --session repo-codex-main
-orche notify route clear --session repo-codex-main --provider discord
+orche session-new \
+  --cwd /repo \
+  --agent codex \
+  --name repo-codex-main \
+  --discord-channel-id 123456789012345678 \
+  --tmux-bridge-target repo-codex-reviewer
 ```
+
+notify 目标被视为 session 创建时绑定的属性。如需修改，请关闭该 session 并使用新的参数重新创建。
 
 配置文件：
 
