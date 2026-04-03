@@ -37,6 +37,7 @@ from backend import (
     resolve_session_context,
     send_prompt,
     set_config_value,
+    supported_agent_names,
 )
 from notify import NotificationService, build_message_from_payload, load_notify_config, parse_payload
 from paths import ensure_directories
@@ -46,7 +47,7 @@ app = typer.Typer(
     name="orche",
     no_args_is_help=False,
     rich_markup_mode="rich",
-    help="Modern CLI for tmux-backed Codex orchestration with tmux-bridge.",
+    help="Modern CLI for tmux-backed agent orchestration with tmux-bridge.",
     add_completion=False,
 )
 config_app = typer.Typer(help="Manage orche runtime configuration.")
@@ -127,6 +128,9 @@ def _notify_runtime_config(runtime_config: dict, session: str) -> dict:
         "cwd",
         "agent",
         "pane_id",
+        "runtime_home",
+        "runtime_home_managed",
+        "runtime_label",
         "codex_home",
         "codex_home_managed",
         "discord_channel_id",
@@ -200,25 +204,47 @@ def _resolve_optional_path(
     return _resolve_path(value)
 
 
+def _start_agent_session(
+    *,
+    cwd: Path,
+    agent: str,
+    name: Optional[str],
+    runtime_home: Optional[Path],
+    discord_channel_id: Optional[str],
+) -> None:
+    session = _session_name(name, cwd, agent)
+    pane_id = ensure_session(
+        session,
+        cwd.resolve(),
+        agent,
+        runtime_home=None if runtime_home is None else str(runtime_home),
+        discord_channel_id=discord_channel_id,
+    )
+    append_action_history(session, cwd.resolve(), agent, "session-new", pane_id=pane_id)
+    console.print(session)
+
+
 def _render_status(info: dict) -> None:
     body = Text()
     body.append("Backend: ", style="bold cyan")
     body.append(f"{info.get('backend', BACKEND)}\n")
     body.append("Session: ", style="bold cyan")
     body.append(f"{info.get('session', '-')}\n")
+    body.append("Agent: ", style="bold cyan")
+    body.append(f"{info.get('agent', '-')}\n")
     body.append("Pane: ", style="bold cyan")
     body.append(f"{info.get('pane_id', '-')}\n")
-    body.append("Codex: ", style="bold cyan")
-    body.append("running\n" if info.get("codex_running") else "stopped\n", style="green" if info.get("codex_running") else "red")
+    body.append("Running: ", style="bold cyan")
+    body.append("yes\n" if info.get("agent_running") else "no\n", style="green" if info.get("agent_running") else "red")
     body.append("Pane exists: ", style="bold cyan")
     body.append("yes\n" if info.get("pane_exists") else "no\n")
     body.append("CWD: ", style="bold cyan")
     body.append(f"{info.get('cwd', '-')}")
-    if info.get("codex_home"):
-        body.append("\nCODEX_HOME: ", style="bold cyan")
-        body.append(str(info["codex_home"]))
+    if info.get("runtime_home"):
+        body.append(f"\n{info.get('runtime_label') or 'Runtime'}: ", style="bold cyan")
+        body.append(str(info["runtime_home"]))
         body.append("\nManaged: ", style="bold cyan")
-        body.append("yes" if info.get("codex_home_managed") else "no")
+        body.append("yes" if info.get("runtime_home_managed") else "no")
     if info.get("discord_session"):
         body.append("\nDiscord session: ", style="bold cyan")
         body.append(str(info["discord_session"]))
@@ -281,27 +307,48 @@ def config_list() -> None:
 
 @app.command("session-new")
 def session_new(
-    cwd: Path = typer.Option(..., callback=_resolve_cwd, file_okay=False, dir_okay=True, resolve_path=False, help="Working directory for the Codex session."),
-    agent: str = typer.Option(..., help="Agent name. Currently only 'codex' is supported."),
+    cwd: Path = typer.Option(..., callback=_resolve_cwd, file_okay=False, dir_okay=True, resolve_path=False, help="Working directory for the agent session."),
+    agent: str = typer.Option(..., help=f"Agent name. Supported: {', '.join(supported_agent_names())}."),
     name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-<agent>-main."),
-    codex_home: Optional[Path] = typer.Option(None, "--codex-home", callback=_resolve_optional_path, resolve_path=False, help="Optional manual CODEX_HOME override. If omitted, orche manages /tmp/orche-codex-<session> automatically."),
+    runtime_home: Optional[Path] = typer.Option(None, "--runtime-home", "--codex-home", callback=_resolve_optional_path, resolve_path=False, help="Optional manual agent runtime home override. If omitted, orche manages a per-session runtime directory when the agent supports it."),
     discord_channel_id: Optional[str] = typer.Option(None, "--discord-channel-id", help="Numeric Discord channel ID to send completion notifications back to."),
 ) -> None:
     try:
-        if agent != "codex":
-            raise OrcheError("Only agent=codex is currently supported")
-        session = _session_name(name, cwd, agent)
-        pane_id = ensure_session(
-            session,
-            cwd.resolve(),
-            agent,
-            codex_home=None if codex_home is None else str(codex_home),
+        _start_agent_session(
+            cwd=cwd,
+            agent=agent,
+            name=name,
+            runtime_home=runtime_home,
             discord_channel_id=discord_channel_id,
         )
-        append_action_history(session, cwd.resolve(), agent, "session-new", pane_id=pane_id)
-        console.print(session)
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)
+
+
+def _agent_session_command(agent: str):
+    def command(
+        cwd: Path = typer.Option(..., callback=_resolve_cwd, file_okay=False, dir_okay=True, resolve_path=False, help=f"Working directory for the {agent} session."),
+        name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-<agent>-main."),
+        runtime_home: Optional[Path] = typer.Option(None, "--runtime-home", "--codex-home", callback=_resolve_optional_path, resolve_path=False, help="Optional manual agent runtime home override. If omitted, orche manages a per-session runtime directory when the agent supports it."),
+        discord_channel_id: Optional[str] = typer.Option(None, "--discord-channel-id", help="Numeric Discord channel ID to send completion notifications back to."),
+    ) -> None:
+        try:
+            _start_agent_session(
+                cwd=cwd,
+                agent=agent,
+                name=name,
+                runtime_home=runtime_home,
+                discord_channel_id=discord_channel_id,
+            )
+        except (OrcheError, subprocess.CalledProcessError) as exc:
+            _handle_error(exc)
+
+    return command
+
+
+app.command("codex", help="Create or reuse a persistent Codex session.")(_agent_session_command("codex"))
+app.command("claude", help="Create or reuse a persistent Claude Code session.")(_agent_session_command("claude"))
+app.command("cc", help="Alias for claude.")(_agent_session_command("claude"))
 
 
 @app.command("send")

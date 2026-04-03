@@ -182,6 +182,68 @@ def test_session_new_expands_cwd_user_home(xdg_runtime, monkeypatch):
     assert captured["agent"] == "codex"
 
 
+def test_codex_command_uses_codex_agent_and_runtime_home(xdg_runtime, monkeypatch):
+    runner = CliRunner()
+    project_dir = xdg_runtime["home"] / "project"
+    runtime_home = xdg_runtime["home"] / "runtime-home"
+    project_dir.mkdir()
+    captured: dict[str, str | Path] = {}
+
+    def fake_ensure_session(session, cwd, agent, **kwargs):
+        captured["session"] = session
+        captured["cwd"] = cwd
+        captured["agent"] = agent
+        captured["runtime_home"] = kwargs.get("runtime_home")
+        captured["discord_channel_id"] = kwargs.get("discord_channel_id")
+        return "%1"
+
+    monkeypatch.setattr(cli, "ensure_session", fake_ensure_session)
+    monkeypatch.setattr(cli, "append_action_history", lambda *args, **kwargs: None)
+
+    result = runner.invoke(
+        app,
+        [
+            "codex",
+            "--cwd",
+            "~/project",
+            "--runtime-home",
+            str(runtime_home),
+            "--discord-channel-id",
+            "1234567890",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["cwd"] == project_dir.resolve()
+    assert captured["agent"] == "codex"
+    assert captured["session"] == "project-codex-main"
+    assert captured["runtime_home"] == str(runtime_home.resolve())
+    assert captured["discord_channel_id"] == "1234567890"
+
+
+def test_claude_aliases_use_claude_agent(xdg_runtime, monkeypatch):
+    runner = CliRunner()
+    project_dir = xdg_runtime["home"] / "project"
+    project_dir.mkdir()
+    calls: list[tuple[str, str]] = []
+
+    def fake_ensure_session(session, cwd, agent, **kwargs):
+        calls.append((session, agent))
+        return "%1"
+
+    monkeypatch.setattr(cli, "ensure_session", fake_ensure_session)
+    monkeypatch.setattr(cli, "append_action_history", lambda *args, **kwargs: None)
+
+    for command_name in ("claude", "cc"):
+        result = runner.invoke(app, [command_name, "--cwd", "~/project"])
+        assert result.exit_code == 0
+
+    assert calls == [
+        ("project-claude-main", "claude"),
+        ("project-claude-main", "claude"),
+    ]
+
+
 def test_unknown_command_shows_clean_error(xdg_runtime, capsys, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["orche", "invalidcmd"])
     exit_code = cli.main()

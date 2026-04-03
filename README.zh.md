@@ -2,16 +2,16 @@
 
 # tmux-orche
 
-面向 OpenClaw fire-and-forget 工作流的 tmux 后端 Codex 编排工具。
+面向 OpenClaw fire-and-forget 工作流的 tmux 后端 CLI agent 编排工具。
 
-`tmux-orche` 让 OpenClaw 可以把任务交给 Codex 后立刻返回，之后再通过同一个持久化 tmux 会话继续接管。这样 OpenClaw 不需要在 Codex 后台工作期间持续消耗 token。
+`tmux-orche` 让 OpenClaw 可以把任务交给 Codex、Claude Code 等受支持的 CLI agent 后立刻返回，之后再通过同一个持久化 tmux 会话继续接管。这样 OpenClaw 不需要在 agent 后台工作期间持续消耗 token。
 
 ## OpenClaw 工作流
 
-1. OpenClaw 使用 `orche session-new` 创建或复用一个 Codex 会话。
+1. OpenClaw 使用 `orche session-new` 创建或复用一个 agent 会话。
 2. OpenClaw 使用 `orche send` 发送任务。
 3. `orche` 立即返回。
-4. Codex 在 tmux 中继续运行。
+4. agent 在 tmux 中继续运行。
 5. notify 到来后，OpenClaw 或其他 agent 再通过 `status`、`read` 或 `history` 检查同一个会话。
 6. 会话会一直保留，直到显式关闭。
 
@@ -78,6 +78,8 @@ pip install .
 
 - `orche session-new --cwd /repo --agent codex --name repo-codex-main --discord-channel-id 123456789012345678`
   创建或复用一个持久化的 Codex tmux 会话。
+- `orche session-new --cwd /repo --agent claude --name repo-claude-main --discord-channel-id 123456789012345678`
+  创建或复用一个持久化的 Claude Code tmux 会话。
 - `orche send --session repo-codex-main "review the recent auth changes"`
   向已有会话发送任务，并立即返回。
 - `orche status --session repo-codex-main`
@@ -141,7 +143,7 @@ orche cancel --session repo-codex-main
 
 - `tmux`
 - `tmux-bridge`
-- `codex` CLI
+- `codex` CLI 和/或 `claude` CLI
 - Python `3.9+`
 
 ## License

@@ -168,7 +168,20 @@ def test_build_message_from_payload_uses_default_prefix_when_summary_is_blank():
     )
 
     assert message is not None
-    assert message.content == "Codex turn complete"
+    assert message.content == "Agent turn complete"
+
+
+def test_build_message_from_payload_accepts_claude_stop_hook_event():
+    message = build_message_from_payload(
+        '{"hook_event_name":"Stop","cwd":"/repo","session_id":"claude-session","summary":"Done"}',
+        notify_config=NotifyConfig(discord=DiscordNotifyConfig(mention_user_id="")),
+        runtime_config={"discord_channel_id": "111"},
+        summary_loader=lambda session: "",
+    )
+
+    assert message is not None
+    assert message.session == "claude-session"
+    assert "Done" in message.content
 
 
 def test_build_message_from_payload_returns_none_for_invalid_payload_text():

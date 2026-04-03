@@ -2,16 +2,16 @@
 
 # tmux-orche
 
-tmux-backed Codex orchestration for OpenClaw fire-and-forget workflows.
+tmux-backed CLI agent orchestration for OpenClaw fire-and-forget workflows.
 
-`tmux-orche` lets OpenClaw hand work to Codex, return immediately, and continue later through the same persistent tmux session. That keeps OpenClaw from burning tokens while Codex works in the background.
+`tmux-orche` lets OpenClaw hand work to a supported CLI agent such as Codex or Claude Code, return immediately, and continue later through the same persistent tmux session. That keeps OpenClaw from burning tokens while the agent works in the background.
 
 ## OpenClaw Workflow
 
-1. OpenClaw creates or reuses a Codex session with `orche session-new`.
+1. OpenClaw creates or reuses an agent session with `orche session-new`.
 2. OpenClaw sends the task with `orche send`.
 3. `orche` returns immediately.
-4. Codex keeps running in tmux.
+4. The agent keeps running in tmux.
 5. When notify arrives, OpenClaw or another agent inspects the same session with `status`, `read`, or `history`.
 6. The session stays available until it is explicitly closed.
 
@@ -78,6 +78,8 @@ pip install .
 
 - `orche session-new --cwd /repo --agent codex --name repo-codex-main --discord-channel-id 123456789012345678`
   Create or reuse a persistent Codex tmux session.
+- `orche session-new --cwd /repo --agent claude --name repo-claude-main --discord-channel-id 123456789012345678`
+  Create or reuse a persistent Claude Code tmux session.
 - `orche send --session repo-codex-main "review the recent auth changes"`
   Send a task into an existing session and return immediately.
 - `orche status --session repo-codex-main`
@@ -175,7 +177,7 @@ Compare with close:
 
 - `tmux`
 - `tmux-bridge`
-- `codex` CLI
+- `codex` CLI and/or `claude` CLI
 - Python `3.9+`
 
 ## License
