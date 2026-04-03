@@ -1,0 +1,57 @@
+name: Publish to TestPyPI
+
+on:
+  push:
+    tags:
+      - "v*rc*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/tmux-orche/
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Verify tag ref
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" != "tag" || ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+rc[0-9]+$ ]]; then
+            echo "::error::TestPyPI publish workflow must run from an rc tag ref (for example v0.4.4rc1)."
+            exit 1
+          fi
+
+      - name: Verify tag matches package version
+        run: |
+          expected_version="${GITHUB_REF_NAME#v}"
+          package_version="$(python - <<'PY'
+          import runpy
+          print(runpy.run_path("src/version.py")["__version__"])
+          PY
+          )"
+
+          if [[ "${package_version}" != "${expected_version}" ]]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package version ${package_version}."
+            exit 1
+          fi
+
+      - name: Build package
+        run: uv build
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
