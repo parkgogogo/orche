@@ -544,3 +544,21 @@ def test_cc_shortcut_defaults_to_current_directory_and_attaches(xdg_runtime, tmp
     assert "exec claude --print --help" in runtime.launch_commands[-1]
     assert "--dangerously-skip-permissions" not in runtime.launch_commands[-1]
     assert "--settings" not in runtime.launch_commands[-1]
+
+
+def test_codex_shortcut_falls_back_to_attach_when_switch_client_has_no_current_client(xdg_runtime, tmp_path, monkeypatch):
+    runtime = make_runtime(monkeypatch, tmp_path)
+    runner = CliRunner()
+    monkeypatch.setenv("TMUX", "fake-client")
+
+    def tmux_with_failed_switch(*args: str, **kwargs):
+        if list(args) == ["switch-client", "-t", backend.TMUX_SESSION]:
+            return subprocess.CompletedProcess(["tmux", *args], 1, stdout="", stderr="no current client")
+        return runtime.tmux(*args, **kwargs)
+
+    monkeypatch.setattr(backend, "tmux", tmux_with_failed_switch)
+
+    result = runner.invoke(app, ["codex", "--cwd", str(runtime.cwd), "--model", "gpt-5.4"])
+
+    assert result.exit_code == 0
+    assert runtime.attached_session == backend.TMUX_SESSION

@@ -687,7 +687,9 @@ def attach_session(session: str, *, pane_id: str = "") -> str:
         raise OrcheError(f"Window not found for session: {session}")
     tmux("select-window", "-t", window_id, check=True, capture=False)
     if os.environ.get("TMUX"):
-        tmux("switch-client", "-t", TMUX_SESSION, check=True, capture=False)
+        result = tmux("switch-client", "-t", TMUX_SESSION, check=False, capture=True)
+        if result.returncode != 0:
+            tmux("attach-session", "-t", TMUX_SESSION, check=True, capture=False)
     else:
         tmux("attach-session", "-t", TMUX_SESSION, check=True, capture=False)
     return window_id
