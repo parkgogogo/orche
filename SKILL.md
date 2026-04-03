@@ -1,274 +1,245 @@
 ---
 name: orche
-description: Use `orche` when OpenClaw or another agent needs fire-and-forget delegation into a persistent tmux-backed CLI agent session. Use it for managed `session-new` handoff, required single-channel notify bindings, querying the current session id from inside tmux, reusing sessions across multiple turns, checking status, reading output, reviewing session history, closing finished sessions, or managing shared runtime config.
+description: Use `orche` when you need to hand work off to a persistent tmux-backed agent session, continue your own turn, and come back later only when inspection or follow-up is needed. It covers opening or reusing sessions, sending prompts, reading live output, answering interactive prompts, attaching mid-flight, and routing explicit notify events to tmux or Discord.
 ---
 
 # orche
 
-Use `orche` as the fire-and-forget handoff boundary between OpenClaw and a long-running tmux-backed agent session.
+`orche` is the session-oriented handoff boundary for long-running CLI agents.
 
-## Design Philosophy
+Use it when you want:
 
-`orche` is built around one idea: fire-and-forget.
+- a persistent worker session instead of a one-shot subprocess
+- explicit session names and reusable state
+- agent-to-agent notify through tmux
+- later inspection without blocking on the worker
 
-OpenClaw should be able to hand work to Codex or another supported CLI agent, return immediately, and keep moving. The delegated agent keeps working in the background inside tmux. OpenClaw does not need to stay attached to that work, stream every token, or block the current turn waiting for completion.
+Prefer `orche` over ad-hoc `tmux send-keys` when the target is an `orche`-managed agent session.
 
-This matters because blocking delegation is expensive and awkward for agent workflows:
+## Core Model
 
-- OpenClaw burns time and context waiting for a long-running task
-- the delegated agent may need minutes, not seconds
-- interactive CLI agents already work well in tmux if their session stays alive
-- the caller usually only needs the result later, not a live transcript right now
+`orche` is organized around one resource: the session.
 
-`orche` solves that by making the session persistent. Create a session once, reuse it across many sends, and inspect it later through `status`, `read`, `history`, and notify. The session is not a one-shot subprocess. It is a durable workspace for ongoing delegated work.
+- `open` creates or reuses a named session
+- `prompt` sends work into an existing session
+- `status`, `read`, `list`, and `attach` inspect or enter the session
+- `input` and `key` answer interactive prompts
+- `cancel` interrupts the current turn but keeps the session alive
+- `close` ends the session cleanly
 
-## Fire-And-Forget Flow
+The normal pattern is:
 
-```text
-OpenClaw / AI caller
-  -> orche session-new
-  -> orche send
-  -> return immediately
+1. open or reuse a session
+2. send work
+3. return immediately
+4. inspect later only if needed
 
-Background tmux session
-  -> agent keeps running
-  -> agent works asynchronously
-  -> hook/watchdog send notify events through one pipeline
+## Default Workflow
 
-Later follow-up
-  -> orche status / read / history
-  -> optional next send into the same session
-  -> close when the work is done
-```
-
-## Workflow
-
-1. Create or reuse a persistent managed session with `orche session-new`.
-2. Send the task with `orche send`.
-3. Return immediately. Do not wait for the agent in the same turn.
-4. Let the agent continue working in the background tmux session.
-5. When notify arrives, inspect the same session with `status`, `read`, or `history`.
-6. Reuse the same session for the next task, or close it when the work is done.
-
-## Why Persistent Sessions
-
-`orche` sessions are designed to be created once and reused many times.
-
-- the agent keeps its live terminal state
-- the session keeps its identity and notify binding
-- follow-up tasks can target the same running agent
-- OpenClaw can inspect progress without reconstructing state from scratch
-
-This is the core difference from a transient subprocess model. A persistent session turns delegation into an ongoing collaboration channel instead of a one-off shell command.
-
-## Compared To Blocking Calls
-
-Traditional blocking delegation usually looks like this:
-
-1. Spawn a subprocess
-2. Wait for it to finish
-3. Hold the caller open the whole time
-4. Lose the interactive session when the process exits
-
-`orche` instead gives you:
-
-- immediate return after handoff
-- background execution in tmux
-- durable session identity
-- later inspection and continuation
-- notify-driven re-entry instead of polling a blocking call
-
-For AI callers, that means less waiting, less wasted context, and cleaner delegation boundaries.
-
-## Quick Start
+Use this flow unless you have a strong reason not to:
 
 ```bash
-# Create or reuse a managed Codex session with a required single notify binding
-orche session-new --cwd /repo --agent codex --name repo-codex-main --notify-to tmux-bridge --notify-target repo-codex-reviewer
+# 1. open a managed worker with explicit notify routing
+orche open --cwd /repo --agent codex --name repo-worker --notify tmux:repo-reviewer
 
-# Send work and return immediately
-orche send --session repo-codex-main "analyze this codebase"
+# 2. send work
+orche prompt repo-worker "implement the parser refactor"
 
-# Check later when notify arrives
-orche status --session repo-codex-main
-orche read --session repo-codex-main --lines 80
-orche history --session repo-codex-main --limit 20
+# 3. leave the worker alone
 
-# Query the current session id from inside the agent tmux pane
-orche session-id
-
+# 4. inspect later if needed
+orche status repo-worker
+orche read repo-worker --lines 120
+orche list
 ```
 
-## Commands
+Treat `prompt` as fire-and-follow-up, not fire-and-busy-wait.
 
-- `session-new`: create or reuse a persistent managed tmux session with orche metadata, optional managed runtime home, and a required single notify binding
-- `send`: send a task into an existing managed session and return immediately
-- `status`: show whether the session and agent process are still running
-- `read`: inspect recent terminal output from the live session
-- `history`: inspect recent local control actions for that session
-- `session-id`, `whoami`: print the current orche session id from `ORCHE_SESSION` or tmux metadata
-- `close`: terminate the session when it is no longer needed
-- `config`: read and update shared runtime configuration
+## Operating Rules
 
-Use `session-new` for AI-driven delegation flows where orche needs to preserve session metadata, notify bindings, and session lifecycle control.
+### Prefer handoff over live babysitting
+
+After `orche prompt`, do not keep polling by default.
+
+Only inspect the worker when:
+
+- the user asked for progress
+- the worker likely needs input
+- you received a notify and need details
+- you are preparing the next prompt
+
+### Prefer `status` before `read`
+
+Use `status` first to answer:
+
+- is the pane still alive?
+- is the agent still running?
+- is there a pending turn?
+- is watchdog reporting `running`, `stalled`, or `needs-input`?
+
+Then use `read` for the transcript.
+
+### Only use `input` / `key` for real interactive prompts
+
+Use:
+
+```bash
+orche input repo-worker "yes"
+orche key repo-worker Enter
+```
+
+This is for cases like:
+
+- approval prompts
+- shell confirmations
+- blocked interactive questions
+
+Do not use `input` as a substitute for `prompt`.
+
+### `attach` is for human takeover or deep debugging
+
+If you need to directly take over the terminal:
+
+```bash
+orche attach repo-worker
+```
+
+Prefer `read` and `status` first. Use `attach` when you actually need the live TTY.
 
 ## Notify
 
-Set exactly one notify channel at session creation time with `session-new`. `--notify-to` and `--notify-target` are required:
+Notify is explicit. There is no default route.
+
+`open --notify` accepts:
+
+- `tmux:<target-session>`
+- `discord:<channel-id>`
+
+Examples:
 
 ```bash
-orche session-new \
-  --cwd /repo \
-  --agent claude \
-  --name repo-claude-review \
-  --notify-to discord \
-  --notify-target 123456789012345678
+orche open --cwd /repo --agent codex --name repo-reviewer --notify discord:123456789012345678
+orche open --cwd /repo --agent codex --name repo-worker --notify tmux:repo-reviewer
 ```
 
-`--notify-to` selects the provider. `--notify-target` carries the provider-specific target value.
+Rules:
 
-Current built-in providers include:
+- use `tmux:<session>` for agent-to-agent routing
+- use `discord:<channel-id>` only when the user explicitly wants Discord delivery
+- do not assume any global Discord config should be used automatically
 
-- `discord`: use a Discord channel id as `--notify-target`
-- `tmux-bridge`: use a target tmux session name as `--notify-target`
+`tmux` maps to the built-in `tmux-bridge` provider internally.
 
-Notify is single-channel per session. To change the notify target or provider, close the session and create a new one.
+## Managed vs Native Sessions
 
-Inside a managed tmux pane, use `orche session-id` or `orche whoami` to discover the current session id before wiring a target session or other notify flow.
+### Managed session
 
-### Unified Notify Pipeline
+Use managed mode when you want `orche` to own the session lifecycle and notify binding:
 
-`orche` now routes both completion hooks and watchdog signals through the same notify service.
+```bash
+orche open --cwd /repo --agent codex --name repo-worker --notify tmux:repo-reviewer
+```
 
-- hook path: completion from the managed agent runtime still emits the final completion event
-- watchdog path: background sampling emits degraded-state events when progress stops
-- event types: `completed`, `stalled`, `needs-input`, `failed`
-- dedupe: notify is deduplicated per session turn, so hook and watchdog do not spam the same event repeatedly
+Managed sessions are the default choice for delegation.
 
-This keeps routing, provider dispatch, and session-level notify binding logic in one place.
+### Native session
 
-### Watchdog
+Use native mode when you need raw agent CLI args after `--`:
 
-Each managed `send` starts a watchdog for the pending turn.
+```bash
+orche open --cwd /repo --agent claude -- --print --help
+```
 
-The watchdog samples:
+Rules:
 
-- pane output tail
-- cursor position
-- pane mode / process state
-- CPU activity
+- raw agent args must come after `--`
+- native sessions do not take `--notify`
+- do not combine raw agent args with `--notify`
 
-It does not rely on a hardcoded prompt-pattern library. Instead it uses heartbeat-style progress detection: if output, cursor, or CPU activity stops changing for long enough, the watchdog emits `stalled`; if the idle period keeps extending, it escalates to `needs-input`; if the agent process exits before completion notify arrives, it emits `failed`.
+## Multi-Session Pattern
 
-The watchdog is an internal mechanism. It starts automatically after `send` and does not require a separate user command. If you need visibility, `orche status` shows a short watchdog summary for the current pending turn.
-
-## CLI Agent Workflow
-
-`orche` also supports multi-session CLI agent collaboration. A common pattern is one tmux session acting as the worker and another tmux session acting as the reviewer.
-
-Example roles:
-
-- session A: worker session that performs implementation work
-- session B: reviewer session that waits for notifications and inspects results
-
-### Session-To-Session Flow
-
-1. Create session B first and keep it available as the review target.
-2. Create session A with `--notify-to tmux-bridge --notify-target <session-b>`.
-3. Send work into session A.
-4. Session A runs in the background and completes its turn.
-5. `tmux-bridge` delivers the notify event directly into session B.
-6. Session B reads the worker result, reviews it, and can send a follow-up task back through its own workflow.
-
-### Example Commands
+Reviewer/worker is the standard pattern:
 
 ```bash
 # reviewer session
-orche session-new \
-  --cwd /repo \
-  --agent codex \
-  --name repo-reviewer \
-  --notify-to discord \
-  --notify-target 123456789012345678
+orche open --cwd /repo --agent codex --name repo-reviewer --notify discord:123456789012345678
 
-# worker session, notify reviewer through tmux-bridge
-orche session-new \
-  --cwd /repo \
-  --agent codex \
-  --name repo-worker \
-  --notify-to tmux-bridge \
-  --notify-target repo-reviewer
+# worker reports back to reviewer through tmux
+orche open --cwd /repo --agent codex --name repo-worker --notify tmux:repo-reviewer
 
-# send implementation work to the worker
-orche send --session repo-worker "implement the parser refactor"
+# send implementation work
+orche prompt repo-worker "implement the parser refactor"
 
-# later, inspect what the reviewer session received
-orche read --session repo-reviewer --lines 120
+# later inspect reviewer
+orche read repo-reviewer --lines 120
 ```
 
-### Session Isolation
+For multiple workers:
 
-Each orche session keeps its own:
+- give every session a stable name
+- route workers back to one reviewer session
+- keep prompts self-contained
+- inspect only the sessions relevant to the next decision
 
-- tmux pane and window identity
-- runtime metadata
-- notify binding
-- control history
+## Recovery
 
-That isolation allows multiple source sessions to run concurrently without mixing their state.
-
-### Concurrent Notify Safety
-
-When multiple source sessions notify the same target session, orche serializes writes with a target-session I/O lock.
-
-This matters because:
-
-- worker A and worker C may both finish at nearly the same time
-- both may target the same reviewer session B
-- the lock prevents interleaved writes from corrupting the reviewer pane output
-
-So the advanced collaboration model is safe for fan-in patterns such as many workers reporting into one reviewer session.
-
-## Config
-
-Use `orche config` to manage shared runtime settings:
+If the agent is stuck but the session should survive:
 
 ```bash
-orche config list
-orche config set discord.bot-token "$TOKEN"
-orche config set discord.mention-user-id "123"
-orche config set notify.enabled true
+orche cancel repo-worker
 ```
 
-Config path:
-
-```text
-~/.config/orche/config.json
-```
-
-## Agent Plugins
-
-Agents are loaded through a plugin registry. The current built-in plugins are `codex` and `claude`.
-
-- Add or update an agent plugin module under `src/agents/`
-- Expose a `PLUGINS` list from that module
-- Register the module in `src/agents/registry.py`
-- The agent then becomes available to `orche session-new --agent ...`
-This keeps agent-specific launch, ready detection, interrupt, and runtime behavior isolated from the generic tmux/session orchestration layer.
-
-## Troubleshooting
-
-### Cancel a stuck turn
-
-If a managed agent session is stuck, running in the wrong direction, or needs to be stopped without losing the session:
+Then inspect:
 
 ```bash
-orche cancel --session repo-codex-main
+orche status repo-worker
+orche read repo-worker --lines 120
 ```
 
-This interrupts the current agent turn but keeps the session alive, allowing you to read output and send a corrected task.
+If the work is finished or the session is no longer useful:
 
-Compare with close:
+```bash
+orche close repo-worker
+```
 
-- `cancel`: interrupt current turn, keep session
-- `close`: end entire session
+## Anti-Patterns
+
+Avoid these:
+
+- opening a new session for every tiny follow-up instead of reusing one
+- combining native raw agent args with `--notify`
+- using `input` for normal task prompts
+- attaching to every worker when `status` or `read` would be enough
+- relying on implicit global notify behavior
+- polling continuously after `prompt` without a concrete reason
+
+## Quick Reference
+
+```bash
+# create or reuse a named managed session
+orche open --cwd /repo --agent codex --name repo-worker --notify tmux:repo-reviewer
+
+# create or reuse a native interactive session
+orche open --cwd /repo --agent claude -- --print --help
+
+# send work
+orche prompt repo-worker "analyze the failing tests"
+
+# inspect
+orche status repo-worker
+orche read repo-worker --lines 80
+orche list
+
+# answer a prompt
+orche input repo-worker "y"
+orche key repo-worker Enter
+
+# take over
+orche attach repo-worker
+
+# interrupt current turn
+orche cancel repo-worker
+
+# end session
+orche close repo-worker
+```

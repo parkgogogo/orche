@@ -21,6 +21,7 @@ from paths import ensure_directories, locks_dir
 from .base import AgentPlugin, AgentRuntime
 from .common import (
     DEFAULT_RUNTIME_HOME_ROOT,
+    ensure_orche_shim,
     normalize_runtime_home,
     remove_runtime_home,
     session_key,
@@ -275,6 +276,9 @@ class CodexAgent(AgentPlugin):
     ) -> str:
         _ = approve_all
         prefix = [f"cd {shlex.quote(str(cwd))}"]
+        orche_shim = ensure_orche_shim()
+        prefix.append(f"export ORCHE_BIN={shlex.quote(str(orche_shim))}")
+        prefix.append(f"export PATH={shlex.quote(str(orche_shim.parent))}:$PATH")
         normalized_runtime_home = normalize_runtime_home(runtime.home)
         if normalized_runtime_home:
             prefix.append(f"mkdir -p {shlex.quote(normalized_runtime_home)}")

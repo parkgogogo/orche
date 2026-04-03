@@ -94,16 +94,7 @@ def resolve_routes(
     binding_target = str(binding.get("target") or "").strip()
     if binding_provider:
         if binding_provider == "discord":
-            binding_target = re.sub(
-                r"\s+",
-                "",
-                binding_target
-                or str(
-                    runtime_config.get("discord_channel_id")
-                    or runtime_config.get("codex_turn_complete_channel_id")
-                    or ""
-                ),
-            )
+            binding_target = re.sub(r"\s+", "", binding_target)
         if binding_target:
             metadata = {
                 key: value
@@ -116,36 +107,6 @@ def resolve_routes(
                     target=binding_target,
                     session=event.session,
                     metadata=metadata,
-                ),
-            )
-
-    provider = str(notify_config.provider or "").strip()
-    if provider == "discord":
-        global_channel_id = re.sub(
-            r"\s+",
-            "",
-            str(
-                runtime_config.get("discord_channel_id")
-                or runtime_config.get("codex_turn_complete_channel_id")
-                or ""
-            ),
-        )
-        if global_channel_id:
-            return (ResolvedRoute(provider="discord", target=global_channel_id, session=event.session),)
-        return ()
-
-    if provider:
-        target = str(
-            runtime_config.get("notify_target")
-            or runtime_config.get("notify_target_session")
-            or ""
-        ).strip()
-        if target:
-            return (
-                ResolvedRoute(
-                    provider=provider,
-                    target=target,
-                    session=event.session,
                 ),
             )
     return ()

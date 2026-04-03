@@ -25,21 +25,21 @@ from backend import (
     bridge_type,
     build_status,
     cancel_session,
-    release_turn_notification,
+    claim_turn_notification,
     close_session,
     current_session_id,
     default_session_name,
     ensure_native_session,
     ensure_session,
     get_config_value,
+    list_config_values,
+    list_sessions,
     load_config,
     load_history_entries,
-    list_sessions,
-    list_config_values,
     latest_turn_summary,
     log_event,
     log_exception,
-    claim_turn_notification,
+    release_turn_notification,
     resolve_session_context,
     run_session_watchdog,
     send_prompt,
@@ -62,17 +62,19 @@ app = typer.Typer(
     name="orche",
     no_args_is_help=False,
     rich_markup_mode="rich",
-    help="Modern CLI for tmux-backed agent orchestration with tmux-bridge.",
+    help="Persistent tmux-backed agent sessions.",
     add_completion=False,
 )
-config_app = typer.Typer(help="Manage orche runtime configuration.")
-sessions_app = typer.Typer(help="Manage stored sessions.")
+config_app = typer.Typer(help="Manage shared runtime configuration.")
 app.add_typer(config_app, name="config")
-app.add_typer(sessions_app, name="sessions")
 console = Console()
 stderr = Console(stderr=True)
 
 _UNKNOWN_COMMAND = re.compile(r"No such command ['\"]?(?P<command>[^'\".]+)['\"]?\.")
+_OPEN_CONTEXT = {
+    "allow_extra_args": True,
+    "ignore_unknown_options": True,
+}
 
 
 def _bool_label(value: bool) -> str:
@@ -197,6 +199,26 @@ def _session_name(name: Optional[str], cwd: Path, agent: str) -> str:
     return name or default_session_name(cwd.resolve(), agent, "main")
 
 
+def _default_cwd() -> Path:
+    return Path.cwd().resolve()
+
+
+def _parse_notify_binding(value: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None, None
+    provider, separator, target = raw.partition(":")
+    provider = provider.strip().lower()
+    target = target.strip()
+    if not separator or not provider or not target:
+        raise OrcheError("--notify must be in the form <provider>:<target>")
+    if provider == "tmux":
+        provider = "tmux-bridge"
+    if provider not in {"discord", "tmux-bridge"}:
+        raise OrcheError("--notify provider must be one of: discord, tmux")
+    return provider, target
+
+
 def _format_click_message(exc: click.ClickException) -> str:
     message = getattr(exc, "message", "") or ""
     match = _UNKNOWN_COMMAND.search(message)
@@ -245,63 +267,6 @@ def _resolve_cwd(
     return _resolve_path(value, must_exist=True, require_dir=True)
 
 
-def _resolve_optional_path(
-    _ctx: typer.Context,
-    _param: typer.CallbackParam,
-    value: Optional[Path],
-) -> Optional[Path]:
-    return _resolve_path(value)
-
-
-def _start_agent_session(
-    *,
-    cwd: Path,
-    agent: str,
-    name: Optional[str],
-    runtime_home: Optional[Path],
-    notify_to: Optional[str],
-    notify_target: Optional[str],
-) -> None:
-    if not str(notify_to or "").strip() or not str(notify_target or "").strip():
-        raise OrcheError("session-new requires both --notify-to and --notify-target")
-    session = _session_name(name, cwd, agent)
-    pane_id = ensure_session(
-        session,
-        cwd.resolve(),
-        agent,
-        runtime_home=None if runtime_home is None else str(runtime_home),
-        notify_to=notify_to,
-        notify_target=notify_target,
-    )
-    append_action_history(session, cwd.resolve(), agent, "session-new", pane_id=pane_id)
-    console.print(session)
-
-
-def _default_cwd() -> Path:
-    return Path.cwd().resolve()
-
-
-def _open_agent_session(
-    *,
-    cwd: Optional[Path],
-    agent: str,
-    session_name: Optional[str],
-    cli_args: list[str],
-) -> None:
-    resolved_cwd = _resolve_path(cwd or _default_cwd(), must_exist=True, require_dir=True)
-    if resolved_cwd is None:
-        raise OrcheError("Failed to resolve cwd")
-    session = _session_name(session_name, resolved_cwd, agent)
-    pane_id = ensure_native_session(
-        session,
-        resolved_cwd,
-        agent,
-        cli_args=cli_args,
-    )
-    append_action_history(session, resolved_cwd, agent, "attach", pane_id=pane_id)
-    attach_session(session, pane_id=pane_id)
-
-
 def _render_status(info: dict) -> None:
     body = Text()
     body.append("Backend: ", style="bold cyan")
@@ -318,17 +283,9 @@ def _render_status(info: dict) -> None:
     body.append("yes\n" if info.get("pane_exists") else "no\n")
     body.append("CWD: ", style="bold cyan")
     body.append(f"{info.get('cwd', '-')}")
-    if info.get("runtime_home"):
-        body.append(f"\n{info.get('runtime_label') or 'Runtime'}: ", style="bold cyan")
-        body.append(str(info["runtime_home"]))
-        body.append("\nManaged: ", style="bold cyan")
-        body.append("yes" if info.get("runtime_home_managed") else "no")
-    if info.get("discord_session"):
-        body.append("\nDiscord session: ", style="bold cyan")
-        body.append(str(info["discord_session"]))
     notify_binding = info.get("notify_binding")
     if isinstance(notify_binding, dict) and notify_binding:
-        body.append("\nNotify binding: ", style="bold cyan")
+        body.append("\nNotify: ", style="bold cyan")
         body.append(json.dumps(notify_binding, ensure_ascii=False))
     if info.get("pending_turn_id"):
         body.append("\nPending turn: ", style="bold cyan")
@@ -337,14 +294,44 @@ def _render_status(info: dict) -> None:
     if isinstance(watchdog, dict) and watchdog:
         body.append("\nWatchdog: ", style="bold cyan")
         body.append(str(watchdog.get("state") or "-"))
-        pid = str(watchdog.get("pid") or "").strip()
-        if pid:
-            body.append(f" (pid={pid})")
-        last_event = str(watchdog.get("last_event") or "").strip()
-        if last_event:
-            body.append("\nWatchdog event: ", style="bold cyan")
-            body.append(last_event)
     console.print(Panel.fit(body, title="orche status", border_style="blue"))
+
+
+def _open_session(
+    *,
+    cwd: Path,
+    agent: str,
+    name: Optional[str],
+    notify: Optional[str],
+    cli_args: list[str],
+) -> None:
+    session = _session_name(name, cwd, agent)
+    notify_to, notify_target = _parse_notify_binding(notify)
+    if cli_args and notify_to:
+        raise OrcheError("open does not support combining --notify with raw agent args")
+    if notify_to:
+        pane_id = ensure_session(
+            session,
+            cwd.resolve(),
+            agent,
+            notify_to=notify_to,
+            notify_target=notify_target,
+        )
+    else:
+        pane_id = ensure_native_session(
+            session,
+            cwd.resolve(),
+            agent,
+            cli_args=cli_args,
+        )
+    append_action_history(session, cwd.resolve(), agent, "open", pane_id=pane_id)
+    console.print(session)
+
+
+def _record_session_action(session: str, action: str, **fields: object) -> None:
+    cwd, agent, _meta = resolve_session_context(session=session)
+    if cwd is not None and agent is not None:
+        append_action_history(session, cwd, agent, action, **fields)
 
 
 @app.callback(invoke_without_command=True)
@@ -361,12 +348,12 @@ def main_callback(
         raise typer.Exit()
 
 
-@app.command("backend")
+@app.command("backend", hidden=True)
 def backend() -> None:
     console.print(BACKEND)
 
 
-@app.command("session-id")
+@app.command("session-id", hidden=True)
 def session_id() -> None:
     try:
         console.print(current_session_id())
@@ -414,91 +401,59 @@ def config_list() -> None:
         _handle_error(exc)
 
 
-@app.command("session-new")
-def session_new(
-    cwd: Path = typer.Option(..., callback=_resolve_cwd, file_okay=False, dir_okay=True, resolve_path=False, help="Working directory for the agent session."),
+@app.command("open", context_settings=_OPEN_CONTEXT)
+def open_session(
+    ctx: typer.Context,
     agent: str = typer.Option(..., help=f"Agent name. Supported: {', '.join(supported_agent_names())}."),
+    cwd: Optional[Path] = typer.Option(None, callback=_resolve_cwd, file_okay=False, dir_okay=True, resolve_path=False, help="Working directory for the session. Defaults to the current directory."),
     name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-<agent>-main."),
-    runtime_home: Optional[Path] = typer.Option(None, "--runtime-home", "--codex-home", callback=_resolve_optional_path, resolve_path=False, help="Optional manual agent runtime home override. If omitted, orche manages a per-session runtime directory when the agent supports it."),
-    notify_to: Optional[str] = typer.Option(None, "--notify-to", help="Single notify provider to bind to this session."),
-    notify_target: Optional[str] = typer.Option(None, "--notify-target", help="Provider-specific notify target value."),
+    notify: Optional[str] = typer.Option(None, "--notify", help="Notify target in the form discord:<channel-id> or tmux:<session>."),
 ) -> None:
     try:
-        _start_agent_session(
-            cwd=cwd,
+        resolved_cwd = _resolve_path(cwd or _default_cwd(), must_exist=True, require_dir=True)
+        if resolved_cwd is None:
+            raise OrcheError("Failed to resolve cwd")
+        _open_session(
+            cwd=resolved_cwd,
             agent=agent,
             name=name,
-            runtime_home=runtime_home,
-            notify_to=notify_to,
-            notify_target=notify_target,
+            notify=notify,
+            cli_args=list(ctx.args),
         )
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)
 
 
-def _agent_session_command(agent: str):
-    def command(
-        ctx: typer.Context,
-        cwd: Optional[Path] = typer.Option(None, callback=_resolve_cwd, file_okay=False, dir_okay=True, resolve_path=False, help=f"Working directory for the {agent} session. Defaults to the current directory."),
-        session_name: Optional[str] = typer.Option(None, "--session-name", help="Optional tmux session name override. Defaults to <repo>-<agent>-main."),
-    ) -> None:
-        try:
-            _open_agent_session(
-                cwd=cwd,
-                agent=agent,
-                session_name=session_name,
-                cli_args=list(ctx.args),
-            )
-        except (OrcheError, subprocess.CalledProcessError) as exc:
-            _handle_error(exc)
-
-    return command
+@app.command("attach")
+def attach(
+    session: str = typer.Argument(..., help="Session name."),
+) -> None:
+    try:
+        attach_session(session)
+        _record_session_action(session, "attach")
+        console.print(session)
+    except (OrcheError, subprocess.CalledProcessError) as exc:
+        _handle_error(exc)
 
 
-_NATIVE_SHORTCUT_CONTEXT = {
-    "allow_extra_args": True,
-    "ignore_unknown_options": True,
-}
-
-
-app.command(
-    "codex",
-    help="Run native Codex inside a named tmux session.",
-    context_settings=_NATIVE_SHORTCUT_CONTEXT,
-    add_help_option=False,
-)(_agent_session_command("codex"))
-app.command(
-    "claude",
-    help="Run native Claude Code inside a named tmux session.",
-    context_settings=_NATIVE_SHORTCUT_CONTEXT,
-    add_help_option=False,
-)(_agent_session_command("claude"))
-app.command(
-    "cc",
-    help="Alias for claude.",
-    context_settings=_NATIVE_SHORTCUT_CONTEXT,
-    add_help_option=False,
-)(_agent_session_command("claude"))
-
-
-@app.command("send")
-def send(
-    session: str = typer.Option(..., "--session", help="Session name."),
-    message: str = typer.Argument(..., help="Message text to send."),
+@app.command("prompt")
+def prompt(
+    session: str = typer.Argument(..., help="Session name."),
+    message: str = typer.Argument(..., help="Prompt text to send."),
 ) -> None:
     try:
         cwd, agent, _meta = resolve_session_context(session=session, require_cwd_agent=True)
         if cwd is None or agent is None:
-            raise OrcheError(f"Session {session} is missing cwd/agent context; create it with session-new first")
+            raise OrcheError(f"Session {session} is missing cwd/agent context; open it first")
         send_prompt(session, cwd, agent, message)
-        console.print(f"Sent. Session: {session}")
+        console.print(session)
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)
 
 
 @app.command("status")
 def status(
-    session: str = typer.Option(..., "--session", help="Session name."),
+    session: str = typer.Argument(..., help="Session name."),
 ) -> None:
     try:
         _render_status(build_status(session))
@@ -508,7 +463,7 @@ def status(
 
 @app.command("read")
 def read(
-    session: str = typer.Option(..., "--session", help="Session name."),
+    session: str = typer.Argument(..., help="Session name."),
     lines: int = typer.Option(50, "--lines", min=1, help="Number of lines to read."),
 ) -> None:
     try:
@@ -517,46 +472,67 @@ def read(
         _handle_error(exc)
 
 
-@app.command("type")
-def type_text(
-    session: str = typer.Option(..., "--session", help="Session name."),
-    text: str = typer.Option(..., "--text", help="Text to type without pressing Enter."),
+@app.command("input")
+def input_text(
+    session: str = typer.Argument(..., help="Session name."),
+    text: str = typer.Argument(..., help="Text to type without pressing Enter."),
 ) -> None:
     try:
         cwd, agent, _meta = resolve_session_context(session=session, require_cwd_agent=True)
         if cwd is None or agent is None:
-            raise OrcheError(f"Session {session} is missing cwd/agent context; create it with session-new first")
+            raise OrcheError(f"Session {session} is missing cwd/agent context; open it first")
         bridge_type(session, text)
-        append_action_history(session, cwd, agent, "type", text=text)
+        append_action_history(session, cwd, agent, "input", text=text)
         console.print(session)
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)
 
 
-@app.command("keys")
-def keys(
-    session: str = typer.Option(..., "--session", help="Session name."),
-    key: List[str] = typer.Option(..., "--key", help="Key name to send. Repeat for multiple keys."),
+@app.command("key")
+def key(
+    session: str = typer.Argument(..., help="Session name."),
+    keys: List[str] = typer.Argument(..., help="Key names to send."),
 ) -> None:
     try:
         cwd, agent, _meta = resolve_session_context(session=session, require_cwd_agent=True)
         if cwd is None or agent is None:
-            raise OrcheError(f"Session {session} is missing cwd/agent context; create it with session-new first")
-        bridge_keys(session, key)
-        append_action_history(session, cwd, agent, "keys", keys=list(key))
+            raise OrcheError(f"Session {session} is missing cwd/agent context; open it first")
+        bridge_keys(session, keys)
+        append_action_history(session, cwd, agent, "key", keys=list(keys))
         console.print(session)
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)
+
+
+@app.command("list")
+def list_command() -> None:
+    sessions = list_sessions()
+    if not sessions:
+        console.print("No sessions found")
+        return
+    table = Table(title="orche sessions")
+    table.add_column("Session", style="cyan")
+    table.add_column("Agent", style="white")
+    table.add_column("CWD", style="white")
+    table.add_column("Pane", style="white")
+    for entry in sessions:
+        table.add_row(
+            str(entry.get("session") or "-"),
+            str(entry.get("agent") or "-"),
+            str(entry.get("cwd") or "-"),
+            str(entry.get("pane_id") or "-"),
+        )
+    console.print(table)
 
 
 @app.command("cancel")
 def cancel(
-    session: str = typer.Option(..., "--session", help="Session name."),
+    session: str = typer.Argument(..., help="Session name."),
 ) -> None:
     try:
         cwd, agent, _meta = resolve_session_context(session=session, require_cwd_agent=True)
         if cwd is None or agent is None:
-            raise OrcheError(f"Session {session} is missing cwd/agent context; create it with session-new first")
+            raise OrcheError(f"Session {session} is missing cwd/agent context; open it first")
         pane_id = cancel_session(session)
         append_action_history(session, cwd, agent, "cancel", pane_id=pane_id)
         console.print(f"Sent Ctrl-C to {pane_id}")
@@ -566,7 +542,7 @@ def cancel(
 
 @app.command("close")
 def close(
-    session: str = typer.Option(..., "--session", help="Session name."),
+    session: str = typer.Argument(..., help="Session name."),
 ) -> None:
     try:
         cwd, agent, _meta = resolve_session_context(session=session)
@@ -578,7 +554,7 @@ def close(
         _handle_error(exc)
 
 
-@app.command("turn-summary")
+@app.command("turn-summary", hidden=True)
 def turn_summary(
     session: str = typer.Option(..., "--session", help="Session name."),
 ) -> None:
@@ -665,6 +641,7 @@ def notify_internal_command(
             source=str(event.metadata.get("source") or "hook"),
             status=event.status,
             summary=event.summary,
+            notification_key=str(event.metadata.get("notification_key") or ""),
         ):
             console.print(f"notify skipped: duplicate {event.event} event")
             log_event(
@@ -687,6 +664,7 @@ def notify_internal_command(
                 event.session,
                 event.event,
                 turn_id=str(event.metadata.get("turn_id") or ""),
+                notification_key=str(event.metadata.get("notification_key") or ""),
             )
             console.print("notify skipped: no notifier routes resolved")
             log_event(
@@ -721,6 +699,7 @@ def notify_internal_command(
                 event.session,
                 event.event,
                 turn_id=str(event.metadata.get("turn_id") or ""),
+                notification_key=str(event.metadata.get("notification_key") or ""),
             )
         if has_failure:
             raise typer.Exit(code=1)
@@ -761,7 +740,7 @@ def notify_discord_hidden(
     )
 
 
-@app.command("history")
+@app.command("history", hidden=True)
 def history(
     session: str = typer.Option(..., "--session", help="Session name."),
     limit: int = typer.Option(20, "--limit", min=1, help="Number of history entries to show."),
@@ -784,29 +763,8 @@ def history(
         console.print(line)
 
 
-@sessions_app.command("list")
-def sessions_list() -> None:
-    sessions = list_sessions()
-    if not sessions:
-        console.print("No sessions found")
-        return
-    table = Table(title="orche sessions")
-    table.add_column("Session", style="cyan")
-    table.add_column("Agent", style="white")
-    table.add_column("CWD", style="white")
-    table.add_column("Pane", style="white")
-    for entry in sessions:
-        table.add_row(
-            str(entry.get("session") or "-"),
-            str(entry.get("agent") or "-"),
-            str(entry.get("cwd") or "-"),
-            str(entry.get("pane_id") or "-"),
-        )
-    console.print(table)
-
-
-@sessions_app.command("clearall")
-def sessions_clearall() -> None:
+@app.command("clearall", hidden=True)
+def clearall() -> None:
     sessions = list_sessions()
     if not sessions:
         console.print("No sessions found")
@@ -819,33 +777,6 @@ def sessions_clearall() -> None:
         close_session(session)
         cleared += 1
     console.print(f"Cleared {cleared} session(s)")
-
-
-def _notify_internal_entry(
-    payload: Optional[str] = typer.Argument(None, help="Optional JSON payload. If omitted, stdin is used."),
-    session: Optional[str] = typer.Option(None, "--session", help="Explicit session override."),
-    channel_id: Optional[str] = typer.Option(None, "--channel-id", help="Explicit Discord channel override."),
-    status: str = typer.Option("success", "--status", help="Delivery status label."),
-    verbose: bool = typer.Option(False, "--verbose", help="Print config, payload, and delivery details."),
-) -> None:
-    notify_internal_command(
-        payload=payload,
-        session=session,
-        channel_id=channel_id,
-        status=status,
-        verbose=verbose,
-    )
-
-
-def _watchdog_loop_internal_entry(
-    session: str = typer.Option(..., "--session", help="Session name."),
-    turn_id: str = typer.Option(..., "--turn-id", help="Turn id to watch."),
-) -> None:
-    watchdog_loop_internal_command(session=session, turn_id=turn_id)
-
-
-app.command("notify-internal", hidden=True)(_notify_internal_entry)
-app.command("watchdog-loop-internal", hidden=True)(_watchdog_loop_internal_entry)
 
 
 def main() -> int:

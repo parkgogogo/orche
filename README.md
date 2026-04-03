@@ -2,55 +2,243 @@
 
 # tmux-orche
 
-tmux-backed CLI agent orchestration for OpenClaw fire-and-forget workflows.
+Persistent tmux-backed agent sessions for delegation, review, and takeover.
 
-`tmux-orche` lets OpenClaw hand work to a supported CLI agent such as Codex or Claude Code, return immediately, and continue later through the same persistent tmux session. That keeps OpenClaw from burning tokens while the agent works in the background.
+`tmux-orche` is for the gap between "run an agent once" and "manually babysit tmux panes all day".
 
-## OpenClaw Workflow
+It lets you:
 
-1. OpenClaw creates or reuses an agent session with `orche session-new`.
-2. OpenClaw sends the task with `orche send`.
-3. `orche` returns immediately.
-4. The agent keeps running in tmux.
-5. When notify arrives, OpenClaw or another agent inspects the same session with `status`, `read`, or `history`.
-6. The session stays available until it is explicitly closed.
+- open a named agent session once and keep reusing it
+- hand work off and return immediately
+- inspect progress later without losing terminal state
+- route replies explicitly to another session or to Discord
+- take over the live TTY at any point
+
+If you already use Codex or Claude Code in tmux, `orche` gives that workflow stable names, explicit session state, and a clean handoff loop.
+
+## Why Use It
+
+Most agent workflows break down in the same places:
+
+- the session disappears after one command
+- you lose the exact terminal state that produced the result
+- follow-up prompts start from scratch
+- multi-agent review flows turn into ad-hoc tmux scripting
+- notifications become implicit and hard to reason about
+
+`orche` fixes that by making the session the primary unit of work.
+
+You do not talk to "some pane". You talk to a named session with:
+
+- a working directory
+- an agent type
+- a persistent tmux pane
+- optional explicit notify routing
+- later inspection and takeover
+
+## What Makes It Different
+
+### Session-first, not pane-first
+
+You work with `repo-worker`, `repo-reviewer`, or `auth-fixer`, not `%17`.
+
+### Handoff-first, not babysitting-first
+
+The default flow is:
+
+1. `open`
+2. `prompt`
+3. leave
+4. `status` / `read` later
+
+### Explicit notify, no default route
+
+Notifications only fire when you explicitly bind a route.
+
+- `tmux:<session>`
+- `discord:<channel-id>`
+
+There is no implicit global default delivery path.
+
+### Works for both background delegation and live takeover
+
+Use `read` and `status` for normal follow-up.
+Use `attach` when you want to directly take control of the terminal.
+
+## Core Workflow
+
+```bash
+# open a worker session once
+orche open \
+  --cwd /path/to/repo \
+  --agent codex \
+  --name repo-worker \
+  --notify tmux:repo-reviewer
+
+# send work
+orche prompt repo-worker "analyze the failing tests and propose a fix"
+
+# come back later
+orche status repo-worker
+orche read repo-worker --lines 120
+
+# take over if needed
+orche attach repo-worker
+
+# close when finished
+orche close repo-worker
+```
+
+That is the intended model: persistent session, explicit handoff, later inspection.
+
+## Best Fit Scenarios
+
+`tmux-orche` is a good fit when you want:
+
+- one reviewer session coordinating multiple workers
+- a long-running implementation or research worker
+- stable session names across multiple prompts
+- terminal-native agents that sometimes ask for input
+- explicit tmux-based notify between sessions
+- a way to jump into the exact live terminal when automation is not enough
+
+It is less useful when you only need one short-lived command and do not plan to come back to the session.
 
 ## Quick Start
 
-Create or reuse a session:
+Open a managed session with explicit notify:
 
 ```bash
-orche session-new \
+orche open \
   --cwd /path/to/repo \
   --agent codex \
-  --name repo-codex-main \
-  --notify-to tmux-bridge \
-  --notify-target repo-codex-reviewer
+  --name repo-worker \
+  --notify tmux:repo-reviewer
 ```
 
-Send work and return immediately:
+Send work:
 
 ```bash
-orche send --session repo-codex-main "analyze the failing tests and propose a fix"
+orche prompt repo-worker "implement the parser refactor"
 ```
 
-Inspect the same session later:
+Inspect later:
 
 ```bash
-orche status --session repo-codex-main
-orche read --session repo-codex-main --lines 120
-orche history --session repo-codex-main --limit 20
+orche status repo-worker
+orche read repo-worker --lines 120
+orche list
 ```
 
-Close it when done:
+Answer interactive prompts:
 
 ```bash
-orche close --session repo-codex-main
+orche input repo-worker "yes"
+orche key repo-worker Enter
 ```
+
+Take over the TTY:
+
+```bash
+orche attach repo-worker
+```
+
+## Managed vs Native Sessions
+
+### Managed session
+
+Use managed mode for normal delegation:
+
+```bash
+orche open --cwd /repo --agent codex --name repo-worker --notify tmux:repo-reviewer
+```
+
+This is the default recommendation.
+
+### Native session
+
+Use native mode when you need raw agent CLI args:
+
+```bash
+orche open --cwd /repo --agent claude -- --print --help
+```
+
+Rules:
+
+- raw agent args must come after `--`
+- native sessions do not use `--notify`
+- do not mix raw agent args with managed notify routing
+
+## Command Model
+
+- `orche open`
+  Create or reuse a named session.
+- `orche prompt`
+  Send a prompt into an existing session.
+- `orche status`
+  Check whether the pane and agent are alive, and whether a turn is pending.
+- `orche read`
+  Read recent terminal output.
+- `orche attach`
+  Attach your terminal to the live tmux session.
+- `orche input`
+  Type text without pressing Enter.
+- `orche key`
+  Send special keys such as `Enter`, `Escape`, or `C-c`.
+- `orche list`
+  List locally known sessions.
+- `orche cancel`
+  Interrupt the current turn but keep the session alive.
+- `orche close`
+  End the session and clean up state.
+- `orche whoami`
+  Print the current session id.
+- `orche config`
+  Read or update shared runtime config.
+
+## Multi-Agent Review Pattern
+
+```bash
+# reviewer
+orche open --cwd /repo --agent codex --name repo-reviewer --notify discord:123456789012345678
+
+# worker reports back to reviewer
+orche open --cwd /repo --agent codex --name repo-worker --notify tmux:repo-reviewer
+
+# send implementation work
+orche prompt repo-worker "implement the parser refactor"
+
+# later inspect reviewer
+orche read repo-reviewer --lines 120
+```
+
+This gives you a durable reviewer/worker loop without ad-hoc tmux scripting.
+
+## Notify
+
+Notify is explicit.
+
+`orche open --notify` accepts:
+
+- `tmux:<target-session>`
+- `discord:<channel-id>`
+
+Examples:
+
+```bash
+orche open --cwd /repo --agent codex --name repo-reviewer --notify discord:123456789012345678
+orche open --cwd /repo --agent codex --name repo-worker --notify tmux:repo-reviewer
+```
+
+Notes:
+
+- use `tmux:<session>` for agent-to-agent routing
+- use `discord:<channel-id>` only when you want Discord delivery
+- changing notify target means opening a new session
 
 ## Installation
 
-Full step-by-step install guide: <https://github.com/parkgogogo/tmux-orche/raw/main/install.md>
+Full install guide: <https://github.com/parkgogogo/tmux-orche/raw/main/install.md>
 
 Install from PyPI:
 
@@ -75,70 +263,7 @@ pip install -U pip
 pip install .
 ```
 
-## Commands
-
-- `orche session-new --cwd /repo --agent codex --name repo-codex-main --notify-to tmux-bridge --notify-target repo-codex-reviewer`
-  Create or reuse a persistent Codex tmux session.
-- `orche session-new --cwd /repo --agent claude --name repo-claude-main --notify-to discord --notify-target 123456789012345678`
-  Create or reuse a persistent Claude Code tmux session.
-- `orche codex --cwd /repo --model gpt-5.4`
-  Run native Codex inside tmux with the default session name for that repo.
-- `orche cc --session-name repo-claude-review --print --help`
-  Run native Claude Code inside tmux with passthrough CLI args and an optional session name override.
-- `orche send --session repo-codex-main "review the recent auth changes"`
-  Send a task into an existing session and return immediately.
-- `orche status --session repo-codex-main`
-  Check whether the session and Codex process are still running.
-- `orche read --session repo-codex-main --lines 80`
-  Read recent terminal output from the live session.
-- `orche type --session repo-codex-main --text "yes"`
-  Type text into the live Codex session without pressing Enter.
-- `orche keys --session repo-codex-main --key Enter`
-  Send one or more key presses to the live Codex session.
-- `orche history --session repo-codex-main --limit 20`
-  Show recent local control actions for that session.
-- `orche sessions list`
-  Show stored sessions from local metadata.
-- `orche sessions clearall`
-  Close and remove all stored sessions.
-- `orche close --session repo-codex-main`
-  Close the session when the work is finished.
-- `orche config list`
-  Show current runtime configuration.
-
-## Interactive Input
-
-Use `type` and `keys` when Codex is waiting on an interactive prompt inside the tmux session.
-
-Read the latest output first:
-
-```bash
-orche read --session repo-codex-main --lines 40
-```
-
-Type text without submitting it:
-
-```bash
-orche type --session repo-codex-main --text "yes"
-```
-
-Then send Enter:
-
-```bash
-orche keys --session repo-codex-main --key Enter
-```
-
-This is useful for prompts such as trust confirmations, shell confirmations, or any other step where Codex is paused waiting for input.
-
-You can also send multiple keys in one command:
-
-```bash
-orche keys --session repo-codex-main --key Down --key Down --key Enter
-```
-
 ## Config
-
-Manage runtime settings:
 
 ```bash
 orche config list
@@ -146,19 +271,6 @@ orche config set discord.bot-token "$BOT_TOKEN"
 orche config set discord.mention-user-id 123456789012345678
 orche config set notify.enabled true
 ```
-
-Set notify targets when creating the session:
-
-```bash
-orche session-new \
-  --cwd /repo \
-  --agent codex \
-  --name repo-codex-main \
-  --notify-to discord \
-  --notify-target 123456789012345678
-```
-
-Notify uses a single bound channel per session. To change it, close the session and create a new one with the desired `--notify-to` and `--notify-target`.
 
 Config file:
 
@@ -172,27 +284,9 @@ State directory:
 ~/.local/share/orche/
 ```
 
-## Troubleshooting
-
-### Cancel a stuck turn
-
-If Codex is stuck, running in the wrong direction, or needs to be stopped without losing the session:
-
-```bash
-orche cancel --session repo-codex-main
-```
-
-This interrupts the current Codex turn but keeps the session alive, allowing you to read output and send a corrected task.
-
-Compare with close:
-
-- `cancel`: Interrupt current turn, keep session (for stuck or still-running tasks)
-- `close`: End entire session (for completed or abandoned tasks)
-
 ## Prerequisites
 
 - `tmux`
-- `tmux-bridge`
 - `codex` CLI and/or `claude` CLI
 - Python `3.9+`
 

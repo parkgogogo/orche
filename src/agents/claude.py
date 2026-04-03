@@ -7,6 +7,7 @@ from pathlib import Path
 from .base import AgentPlugin, AgentRuntime
 from .common import (
     DEFAULT_RUNTIME_HOME_ROOT,
+    ensure_orche_shim,
     normalize_runtime_home,
     remove_runtime_home,
     session_key,
@@ -120,6 +121,9 @@ class ClaudeAgent(AgentPlugin):
     ) -> str:
         _ = approve_all
         prefix = [f"cd {shlex.quote(str(cwd))}"]
+        orche_shim = ensure_orche_shim()
+        prefix.append(f"export ORCHE_BIN={shlex.quote(str(orche_shim))}")
+        prefix.append(f"export PATH={shlex.quote(str(orche_shim.parent))}:$PATH")
         if session:
             prefix.append(f"export ORCHE_SESSION={shlex.quote(session)}")
         if discord_channel_id:
@@ -130,7 +134,7 @@ class ClaudeAgent(AgentPlugin):
         return " && ".join(prefix)
 
     def matches_process(self, pane_command: str, descendant_commands: list[str]) -> bool:
-        if pane_command == "claude":
+        if pane_command in {"claude", "node"}:
             return True
         for proc in descendant_commands:
             lowered = proc.lower()

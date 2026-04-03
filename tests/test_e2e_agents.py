@@ -256,7 +256,11 @@ class FakeOrcheRuntime:
         if command == "send-keys":
             pane = self.panes[args[args.index("-t") + 1]]
             if "-l" in args:
-                self._handle_launch(pane, args[args.index("-l") + 1])
+                literal_text = args[args.index("-l") + 1]
+                if pane.agent:
+                    pane.pending_input += literal_text
+                else:
+                    self._handle_launch(pane, literal_text)
             else:
                 values = [arg for arg in args[args.index("-t") + 2 :] if arg not in {"-t"}]
                 self._handle_bridge_keys(pane, pane.pane_title, values)
@@ -319,10 +323,8 @@ def make_runtime(monkeypatch, tmp_path: Path) -> FakeOrcheRuntime:
     clock = FakeClock()
 
     monkeypatch.setattr(backend, "tmux", runtime.tmux)
-    monkeypatch.setattr(backend, "tmux_bridge", runtime.tmux_bridge)
     monkeypatch.setattr(backend, "process_descendants", runtime.process_descendants)
     monkeypatch.setattr(backend, "require_tmux", lambda: None)
-    monkeypatch.setattr(backend, "require_tmux_bridge", lambda: "tmux-bridge")
     monkeypatch.setattr(backend.time, "time", clock.time)
     monkeypatch.setattr(backend.time, "sleep", clock.sleep)
     monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", source_home)
@@ -346,28 +348,28 @@ def test_codex_e2e_session_lifecycle(xdg_runtime, tmp_path, monkeypatch):
     result = runner.invoke(
         app,
         [
-            "session-new",
+            "open",
             "--cwd",
             str(runtime.cwd),
             "--agent",
             "codex",
             "--name",
             session,
-            "--notify-to",
-            "discord",
-            "--notify-target",
-            "1234567890",
+            "--notify",
+            "discord:1234567890",
         ],
     )
     assert result.exit_code == 0
     assert session in result.stdout
+    assert "export ORCHE_BIN=" in runtime.launch_commands[-1]
+    assert "export PATH=" in runtime.launch_commands[-1]
     assert "codex --no-alt-screen" in runtime.launch_commands[-1]
     assert "--dangerously-bypass-approvals-and-sandbox" in runtime.launch_commands[-1]
 
-    send_result = runner.invoke(app, ["send", "--session", session, "summarize repo"])
-    status_result = runner.invoke(app, ["status", "--session", session])
-    read_result = runner.invoke(app, ["read", "--session", session, "--lines", "40"])
-    close_result = runner.invoke(app, ["close", "--session", session])
+    send_result = runner.invoke(app, ["prompt", session, "summarize repo"])
+    status_result = runner.invoke(app, ["status", session])
+    read_result = runner.invoke(app, ["read", session, "--lines", "40"])
+    close_result = runner.invoke(app, ["close", session])
 
     assert send_result.exit_code == 0
     assert runtime.watchdog_starts
@@ -389,22 +391,22 @@ def test_claude_e2e_launches_headlessly_without_startup_approval(xdg_runtime, tm
     result = runner.invoke(
         app,
         [
-            "session-new",
+            "open",
             "--cwd",
             str(runtime.cwd),
             "--agent",
             "claude",
             "--name",
             session,
-            "--notify-to",
-            "discord",
-            "--notify-target",
-            "1234567890",
+            "--notify",
+            "discord:1234567890",
         ],
     )
-    read_result = runner.invoke(app, ["read", "--session", session, "--lines", "40"])
+    read_result = runner.invoke(app, ["read", session, "--lines", "40"])
 
     assert result.exit_code == 0
+    assert "export ORCHE_BIN=" in runtime.launch_commands[-1]
+    assert "export PATH=" in runtime.launch_commands[-1]
     assert "claude --dangerously-skip-permissions" in runtime.launch_commands[-1]
     assert "--settings" in runtime.launch_commands[-1]
     assert "Approval required" not in read_result.stdout
@@ -420,26 +422,24 @@ def test_claude_e2e_interactive_approval_prompt_can_be_answered(xdg_runtime, tmp
     assert runner.invoke(
         app,
         [
-            "session-new",
+            "open",
             "--cwd",
             str(runtime.cwd),
             "--agent",
             "claude",
             "--name",
             session,
-            "--notify-to",
-            "discord",
-            "--notify-target",
-            "1234567890",
+            "--notify",
+            "discord:1234567890",
         ],
     ).exit_code == 0
 
-    send_result = runner.invoke(app, ["send", "--session", session, "edit the failing test"])
-    read_result = runner.invoke(app, ["read", "--session", session, "--lines", "50"])
-    status_result = runner.invoke(app, ["status", "--session", session])
-    type_result = runner.invoke(app, ["type", "--session", session, "--text", "yes"])
-    keys_result = runner.invoke(app, ["keys", "--session", session, "--key", "Enter"])
-    final_read_result = runner.invoke(app, ["read", "--session", session, "--lines", "50"])
+    send_result = runner.invoke(app, ["prompt", session, "edit the failing test"])
+    read_result = runner.invoke(app, ["read", session, "--lines", "50"])
+    status_result = runner.invoke(app, ["status", session])
+    type_result = runner.invoke(app, ["input", session, "yes"])
+    keys_result = runner.invoke(app, ["key", session, "Enter"])
+    final_read_result = runner.invoke(app, ["read", session, "--lines", "50"])
 
     assert send_result.exit_code == 0
     assert runtime.watchdog_starts[-1][0] == session
@@ -462,26 +462,24 @@ def test_claude_e2e_cancel_recovers_from_blocking_prompt_and_keeps_session(xdg_r
     assert runner.invoke(
         app,
         [
-            "session-new",
+            "open",
             "--cwd",
             str(runtime.cwd),
             "--agent",
             "claude",
             "--name",
             session,
-            "--notify-to",
-            "discord",
-            "--notify-target",
-            "1234567890",
+            "--notify",
+            "discord:1234567890",
         ],
     ).exit_code == 0
-    assert runner.invoke(app, ["send", "--session", session, "run the formatter"]).exit_code == 0
+    assert runner.invoke(app, ["prompt", session, "run the formatter"]).exit_code == 0
 
-    blocked_read = runner.invoke(app, ["read", "--session", session, "--lines", "40"])
-    cancel_result = runner.invoke(app, ["cancel", "--session", session])
-    after_cancel = runner.invoke(app, ["read", "--session", session, "--lines", "40"])
-    resend_result = runner.invoke(app, ["send", "--session", session, "summarize current status"])
-    final_read = runner.invoke(app, ["read", "--session", session, "--lines", "40"])
+    blocked_read = runner.invoke(app, ["read", session, "--lines", "40"])
+    cancel_result = runner.invoke(app, ["cancel", session])
+    after_cancel = runner.invoke(app, ["read", session, "--lines", "40"])
+    resend_result = runner.invoke(app, ["prompt", session, "summarize current status"])
+    final_read = runner.invoke(app, ["read", session, "--lines", "40"])
 
     assert "Approval required to run shell command" in blocked_read.stdout
     assert cancel_result.exit_code == 0
@@ -499,22 +497,20 @@ def test_status_reports_pending_turn_watchdog_state(xdg_runtime, tmp_path, monke
     assert runner.invoke(
         app,
         [
-            "session-new",
+            "open",
             "--cwd",
             str(runtime.cwd),
             "--agent",
             "codex",
             "--name",
             session,
-            "--notify-to",
-            "discord",
-            "--notify-target",
-            "1234567890",
+            "--notify",
+            "discord:1234567890",
         ],
     ).exit_code == 0
 
-    send_result = runner.invoke(app, ["send", "--session", session, "analyze the repo"])
-    status_result = runner.invoke(app, ["status", "--session", session])
+    send_result = runner.invoke(app, ["prompt", session, "analyze the repo"])
+    status_result = runner.invoke(app, ["status", session])
 
     assert send_result.exit_code == 0
     assert status_result.exit_code == 0
@@ -538,17 +534,15 @@ def test_claude_e2e_startup_times_out_if_permission_bypass_is_removed(xdg_runtim
     result = runner.invoke(
         app,
         [
-            "session-new",
+            "open",
             "--cwd",
             str(runtime.cwd),
             "--agent",
             "claude",
             "--name",
             session,
-            "--notify-to",
-            "discord",
-            "--notify-target",
-            "1234567890",
+            "--notify",
+            "discord:1234567890",
         ],
     )
 
@@ -556,39 +550,46 @@ def test_claude_e2e_startup_times_out_if_permission_bypass_is_removed(xdg_runtim
     assert "Timed out waiting for Claude Code to become ready" in result.output
 
 
-def test_codex_shortcut_attaches_interactive_session(xdg_runtime, tmp_path, monkeypatch):
+def test_open_native_session_can_attach_interactively(xdg_runtime, tmp_path, monkeypatch):
     runtime = make_runtime(monkeypatch, tmp_path)
     runner = CliRunner()
 
-    result = runner.invoke(app, ["codex", "--cwd", str(runtime.cwd), "--model", "gpt-5.4"])
+    result = runner.invoke(app, ["open", "--cwd", str(runtime.cwd), "--agent", "codex", "--model", "gpt-5.4"])
+    attach_result = runner.invoke(app, ["attach", "project-codex-main"])
 
     assert result.exit_code == 0
+    assert attach_result.exit_code == 0
     assert runtime.attached_session == backend.TMUX_SESSION or runtime.switched_session == backend.TMUX_SESSION
     assert runtime.selected_window_id == "@1"
+    assert "export ORCHE_BIN=" in runtime.launch_commands[-1]
+    assert "export PATH=" in runtime.launch_commands[-1]
     assert "exec codex --model gpt-5.4" in runtime.launch_commands[-1]
     assert "--dangerously-bypass-approvals-and-sandbox" not in runtime.launch_commands[-1]
     assert "CODEX_HOME" not in runtime.launch_commands[-1]
 
 
-def test_cc_shortcut_defaults_to_current_directory_and_attaches(xdg_runtime, tmp_path, monkeypatch):
+def test_open_native_session_defaults_to_current_directory(xdg_runtime, tmp_path, monkeypatch):
     runtime = make_runtime(monkeypatch, tmp_path)
     runner = CliRunner()
     monkeypatch.chdir(runtime.cwd)
 
-    result = runner.invoke(app, ["cc", "--print", "--help"])
+    result = runner.invoke(app, ["open", "--agent", "claude", "--", "--print", "--help"])
 
     assert result.exit_code == 0
-    assert runtime.attached_session == backend.TMUX_SESSION or runtime.switched_session == backend.TMUX_SESSION
-    assert runtime.selected_window_id == "@1"
+    assert "export ORCHE_BIN=" in runtime.launch_commands[-1]
+    assert "export PATH=" in runtime.launch_commands[-1]
     assert "exec claude --print --help" in runtime.launch_commands[-1]
     assert "--dangerously-skip-permissions" not in runtime.launch_commands[-1]
     assert "--settings" not in runtime.launch_commands[-1]
 
 
-def test_codex_shortcut_falls_back_to_attach_when_switch_client_has_no_current_client(xdg_runtime, tmp_path, monkeypatch):
+def test_attach_falls_back_to_attach_session_when_switch_client_has_no_current_client(xdg_runtime, tmp_path, monkeypatch):
     runtime = make_runtime(monkeypatch, tmp_path)
     runner = CliRunner()
     monkeypatch.setenv("TMUX", "fake-client")
+
+    open_result = runner.invoke(app, ["open", "--cwd", str(runtime.cwd), "--agent", "codex", "--model", "gpt-5.4"])
+    assert open_result.exit_code == 0
 
     def tmux_with_failed_switch(*args: str, **kwargs):
         if list(args) == ["switch-client", "-t", backend.TMUX_SESSION]:
@@ -597,7 +598,7 @@ def test_codex_shortcut_falls_back_to_attach_when_switch_client_has_no_current_c
 
     monkeypatch.setattr(backend, "tmux", tmux_with_failed_switch)
 
-    result = runner.invoke(app, ["codex", "--cwd", str(runtime.cwd), "--model", "gpt-5.4"])
+    result = runner.invoke(app, ["attach", "project-codex-main"])
 
     assert result.exit_code == 0
     assert runtime.attached_session == backend.TMUX_SESSION

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import contextlib
 import re
+import shlex
 import shutil
+import sys
 import tempfile
 import uuid
 from pathlib import Path
 
 from notify_hook import NOTIFY_DISCORD_SH
+from paths import bridges_dir, ensure_directories
 
 
 DEFAULT_RUNTIME_HOME_ROOT = Path(tempfile.gettempdir())
@@ -67,3 +70,33 @@ def write_notify_hook(hook_path: Path) -> None:
     hook_path.parent.mkdir(parents=True, exist_ok=True)
     hook_path.write_text(NOTIFY_DISCORD_SH, encoding="utf-8")
     hook_path.chmod(0o755)
+
+
+def ensure_orche_shim() -> Path:
+    ensure_directories()
+    shim_path = bridges_dir() / "bin" / "orche"
+    source_root = Path(__file__).resolve().parent.parent
+    bootstrap = (
+        "import sys; "
+        f"sys.path.insert(0, {str(source_root)!r}); "
+        "import cli; "
+        'sys.argv = ["orche", *sys.argv[1:]]; '
+        "raise SystemExit(cli.main())"
+    )
+    shim_body = "\n".join(
+        (
+            "#!/bin/sh",
+            "set -eu",
+            (
+                f"exec {shlex.quote(str(Path(sys.executable).resolve()))} "
+                f"-c {shlex.quote(bootstrap)} "
+                '"$@"'
+            ),
+            "",
+        )
+    )
+    if not shim_path.exists() or shim_path.read_text(encoding="utf-8") != shim_body:
+        shim_path.parent.mkdir(parents=True, exist_ok=True)
+        write_text_atomically(shim_path, shim_body)
+        shim_path.chmod(0o755)
+    return shim_path

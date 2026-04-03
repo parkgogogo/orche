@@ -21,6 +21,7 @@ from agents import AgentPlugin, AgentRuntime, get_agent_plugin, supported_agents
 from agents.claude import ClaudeAgent, default_claude_home_path
 from agents.codex import CodexAgent, SOURCE_CONFIG_BACKUP_SUFFIX, default_codex_home_path
 from agents.common import (
+    ensure_orche_shim,
     normalize_runtime_home,
     remove_runtime_home,
     validate_discord_channel_id as common_validate_discord_channel_id,
@@ -28,20 +29,21 @@ from agents.common import (
 )
 from paths import config_path, ensure_directories, history_dir, locks_dir, meta_dir, orch_log_path
 
-BACKEND = "smux"
-TMUX_SESSION = "orche-smux"
+BACKEND = "tmux"
+TMUX_SESSION = "orche"
+LEGACY_TMUX_SESSION = "orche-smux"
 DEFAULT_CAPTURE_LINES = 200
 STARTUP_TIMEOUT = 90.0
 WATCHDOG_CAPTURE_LINES = 80
 WATCHDOG_POLL_INTERVAL = 3.0
 WATCHDOG_STALLED_AFTER = 45.0
 WATCHDOG_NEEDS_INPUT_AFTER = 120.0
+WATCHDOG_REMINDER_AFTER = 600.0
 WATCHDOG_ACTIVE_CPU_THRESHOLD = 5.0
 CONFIG_COMMENT = (
     "orche runtime config. session is the active orche agent session label; "
     "discord_session is the Discord/OpenClaw session key used for notify routing."
 )
-TMUX_BRIDGE_FALLBACK = Path.home() / ".smux" / "bin" / "tmux-bridge"
 DEFAULT_CODEX_HOME_ROOT = codex_agent_module.DEFAULT_RUNTIME_HOME_ROOT
 DEFAULT_CODEX_SOURCE_HOME = codex_agent_module.DEFAULT_CODEX_SOURCE_HOME
 SUPPORTED_NOTIFY_PROVIDERS = ("discord", "tmux-bridge")
@@ -219,16 +221,7 @@ def run(
 def require_tmux() -> None:
     if shutil.which("tmux"):
         return
-    raise OrcheError("tmux is not installed; smux backend requires tmux")
-
-
-def require_tmux_bridge() -> str:
-    candidate = shutil.which("tmux-bridge")
-    if candidate:
-        return candidate
-    if TMUX_BRIDGE_FALLBACK.exists():
-        return str(TMUX_BRIDGE_FALLBACK)
-    raise OrcheError("tmux-bridge is not installed; run the official smux installer first")
+    raise OrcheError("tmux is not installed; orche requires tmux")
 
 
 def tmux(*args: str, check: bool = True, capture: bool = True) -> subprocess.CompletedProcess[str]:
@@ -236,9 +229,105 @@ def tmux(*args: str, check: bool = True, capture: bool = True) -> subprocess.Com
     return run(["tmux", *args], check=check, capture=capture)
 
 
+def _known_tmux_sessions() -> Tuple[str, ...]:
+    return (TMUX_SESSION, LEGACY_TMUX_SESSION)
+
+
+def _active_tmux_session(*, create: bool = False) -> str:
+    for session_name in _known_tmux_sessions():
+        result = tmux("has-session", "-t", session_name, check=False, capture=True)
+        if result.returncode == 0:
+            return session_name
+    return TMUX_SESSION if create else ""
+
+
+def _bridge_result(
+    args: Sequence[str],
+    *,
+    returncode: int = 0,
+    stdout: str = "",
+    stderr: str = "",
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(
+        ["tmux-bridge", *args],
+        returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
+def _resolve_bridge_pane(session: str) -> str:
+    session_name = str(session or "").strip()
+    if not session_name:
+        raise OrcheError("session is required")
+    for pane in list_panes():
+        if str(pane.get("pane_title") or "").strip() == session_name:
+            return str(pane.get("pane_id") or "").strip()
+    meta_pane_id = str(load_meta(session_name).get("pane_id") or "").strip()
+    if meta_pane_id and pane_exists(meta_pane_id):
+        return meta_pane_id
+    raise OrcheError(f"Unknown session: {session_name}")
+
+
+def _tmux_bridge_dispatch(*args: str) -> subprocess.CompletedProcess[str]:
+    if not args:
+        raise OrcheError("tmux-bridge command is required")
+    command = args[0]
+    if command == "name":
+        if len(args) != 3:
+            raise OrcheError("tmux-bridge name requires <pane_id> <session>")
+        pane_id, session = args[1], args[2]
+        if not pane_exists(pane_id):
+            raise OrcheError(f"Unknown pane: {pane_id}")
+        tmux("select-pane", "-t", pane_id, "-T", session, check=False, capture=True)
+        return _bridge_result(args)
+    if command == "resolve":
+        if len(args) != 2:
+            raise OrcheError("tmux-bridge resolve requires <session>")
+        pane_id = _resolve_bridge_pane(args[1])
+        return _bridge_result(args, stdout=pane_id)
+    if command == "read":
+        if len(args) != 3:
+            raise OrcheError("tmux-bridge read requires <session> <lines>")
+        session, line_text = args[1], args[2]
+        try:
+            lines = max(int(line_text), 1)
+        except ValueError as exc:
+            raise OrcheError(f"Invalid line count: {line_text}") from exc
+        pane_id = _resolve_bridge_pane(session)
+        return _bridge_result(args, stdout=read_pane(pane_id, lines))
+    if command == "type":
+        if len(args) != 3:
+            raise OrcheError("tmux-bridge type requires <session> <text>")
+        session, text = args[1], args[2]
+        pane_id = _resolve_bridge_pane(session)
+        tmux("send-keys", "-t", pane_id, "-l", text, check=True, capture=True)
+        return _bridge_result(args)
+    if command == "keys":
+        if len(args) < 3:
+            raise OrcheError("tmux-bridge keys requires <session> <key>...")
+        session = args[1]
+        pane_id = _resolve_bridge_pane(session)
+        tmux("send-keys", "-t", pane_id, *args[2:], check=True, capture=True)
+        return _bridge_result(args)
+    raise OrcheError(f"Unsupported tmux-bridge command: {command}")
+
+
 def tmux_bridge(*args: str, check: bool = True, capture: bool = True) -> subprocess.CompletedProcess[str]:
-    bridge = require_tmux_bridge()
-    return run([bridge, *args], check=check, capture=capture)
+    try:
+        result = _tmux_bridge_dispatch(*args)
+    except OrcheError as exc:
+        result = _bridge_result(args, returncode=1, stderr=str(exc))
+        if check:
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                result.args,
+                output=result.stdout,
+                stderr=result.stderr,
+            ) from exc
+    if not capture:
+        return _bridge_result(args, returncode=result.returncode)
+    return result
 
 
 def pane_exists(pane_id: str) -> bool:
@@ -247,17 +336,17 @@ def pane_exists(pane_id: str) -> bool:
 
 
 def tmux_session_exists() -> bool:
-    result = tmux("has-session", "-t", TMUX_SESSION, check=False, capture=True)
-    return result.returncode == 0
+    return bool(_active_tmux_session())
 
 
 def list_windows() -> List[Dict[str, str]]:
-    if not tmux_session_exists():
+    session_name = _active_tmux_session()
+    if not session_name:
         return []
     result = tmux(
         "list-windows",
         "-t",
-        TMUX_SESSION,
+        session_name,
         "-F",
         "#{window_id}\t#{window_name}",
         check=False,
@@ -285,9 +374,10 @@ def list_panes(target: Optional[str] = None) -> List[Dict[str, str]]:
     if target:
         args.extend(["-t", target])
     else:
-        if not tmux_session_exists():
+        session_name = _active_tmux_session()
+        if not session_name:
             return []
-        args.extend(["-t", TMUX_SESSION])
+        args.extend(["-t", session_name])
     args.extend(
         [
             "-F",
@@ -782,13 +872,14 @@ def attach_session(session: str, *, pane_id: str = "") -> str:
     window_id = str(info.get("window_id") or "").strip()
     if not window_id:
         raise OrcheError(f"Window not found for session: {session}")
+    tmux_session_name = _active_tmux_session(create=True)
     tmux("select-window", "-t", window_id, check=True, capture=False)
     if os.environ.get("TMUX"):
-        result = tmux("switch-client", "-t", TMUX_SESSION, check=False, capture=True)
+        result = tmux("switch-client", "-t", tmux_session_name, check=False, capture=True)
         if result.returncode != 0:
-            tmux("attach-session", "-t", TMUX_SESSION, check=True, capture=False)
+            tmux("attach-session", "-t", tmux_session_name, check=True, capture=False)
     else:
-        tmux("attach-session", "-t", TMUX_SESSION, check=True, capture=False)
+        tmux("attach-session", "-t", tmux_session_name, check=True, capture=False)
     return window_id
 
 
@@ -881,8 +972,9 @@ def ensure_window(name: str, cwd: Path) -> Dict[str, str]:
     window = find_window(name)
     if window is not None:
         return window
-    if tmux_session_exists():
-        tmux("new-window", "-d", "-t", TMUX_SESSION, "-n", name, "-c", str(cwd), check=True, capture=True)
+    tmux_session_name = _active_tmux_session()
+    if tmux_session_name:
+        tmux("new-window", "-d", "-t", tmux_session_name, "-n", name, "-c", str(cwd), check=True, capture=True)
     else:
         tmux("new-session", "-d", "-s", TMUX_SESSION, "-n", name, "-c", str(cwd), check=True, capture=True)
     created = find_window(name)
@@ -1147,6 +1239,9 @@ def build_native_agent_launch_command(
 ) -> str:
     command = [plugin.name, *[str(value) for value in cli_args]]
     prefix = [f"cd {shlex.quote(str(cwd))}"]
+    orche_shim = ensure_orche_shim()
+    prefix.append(f"export ORCHE_BIN={shlex.quote(str(orche_shim))}")
+    prefix.append(f"export PATH={shlex.quote(str(orche_shim.parent))}:$PATH")
     prefix.append(f"exec {' '.join(shlex.quote(part) for part in command)}")
     return " && ".join(prefix)
 
@@ -1225,8 +1320,8 @@ def ensure_native_session(
         )
     if existing_meta and session_launch_mode(existing_meta) != "native":
         raise OrcheError(
-            f"Session {session} is already managed by orche session-new. "
-            "Use session-new commands for managed sessions or close the session and recreate it with the shortcut command."
+            f"Session {session} is already managed by orche open. "
+            "Use orche open without raw agent args for managed sessions, or close the session and recreate it."
         )
     provided_cli_args = [str(value) for value in cli_args]
     existing_cli_args = native_cli_args_from_meta(existing_meta)
@@ -1302,8 +1397,9 @@ def claim_turn_notification(
     source: str = "",
     status: str = "",
     summary: str = "",
+    notification_key: str = "",
 ) -> bool:
-    normalized_event = str(event or "").strip().lower()
+    normalized_event = str(notification_key or event or "").strip().lower()
     if not session or not normalized_event:
         return True
     with session_lock(session):
@@ -1328,8 +1424,14 @@ def claim_turn_notification(
         return True
 
 
-def release_turn_notification(session: str, event: str, *, turn_id: str = "") -> None:
-    normalized_event = str(event or "").strip().lower()
+def release_turn_notification(
+    session: str,
+    event: str,
+    *,
+    turn_id: str = "",
+    notification_key: str = "",
+) -> None:
+    normalized_event = str(notification_key or event or "").strip().lower()
     if not session or not normalized_event:
         return
     with session_lock(session):
@@ -1388,6 +1490,7 @@ def emit_internal_notify(
     turn_id: str = "",
     cwd: str = "",
     source: str = "",
+    notification_key: str = "",
 ) -> bool:
     payload = {
         "event": event,
@@ -1399,6 +1502,7 @@ def emit_internal_notify(
         "metadata": {
             "turn_id": turn_id,
             "source": source,
+            "notification_key": notification_key,
         },
     }
     command = _orche_bootstrap_command() + ["notify-internal", "--session", session, "--status", status]
@@ -1446,6 +1550,34 @@ def _watchdog_event_status(event: str) -> str:
     if event in {"stalled", "needs-input"}:
         return "warning"
     return "success"
+
+
+def _latest_notification_at(pending_turn: Mapping[str, Any]) -> float:
+    notifications = pending_turn.get("notifications")
+    if not isinstance(notifications, dict):
+        return 0.0
+    latest = 0.0
+    for payload in notifications.values():
+        if not isinstance(payload, Mapping):
+            continue
+        try:
+            latest = max(latest, float(payload.get("at") or 0.0))
+        except (TypeError, ValueError):
+            continue
+    return latest
+
+
+def _watchdog_reminder_summary(session: str, state: str) -> str:
+    normalized = str(state or "").strip().lower() or "stalled"
+    if normalized == "needs-input":
+        situation = "The agent is likely waiting for terminal input, approval, or other user intervention."
+    else:
+        situation = "The agent session has shown no visible progress for an extended period."
+    return (
+        f"Session {session} is still in {normalized} state and has gone 10 minutes without a successful notify. "
+        f"{situation} To reconnect with it, run `orche status {session}` and "
+        f"`orche read {session} --lines 120`."
+    )
 
 
 def start_session_watchdog(session: str, *, turn_id: str = "") -> int:
@@ -1536,6 +1668,7 @@ def run_session_watchdog(
     poll_interval: float = WATCHDOG_POLL_INTERVAL,
     stalled_after: float = WATCHDOG_STALLED_AFTER,
     needs_input_after: float = WATCHDOG_NEEDS_INPUT_AFTER,
+    reminder_after: float = WATCHDOG_REMINDER_AFTER,
 ) -> str:
     while True:
         meta = load_meta(session)
@@ -1621,6 +1754,24 @@ def run_session_watchdog(
             )
             if state == "failed":
                 return state
+        latest_notify_at = _latest_notification_at(pending_turn or {})
+        if (
+            state in {"stalled", "needs-input"}
+            and latest_notify_at > 0.0
+            and now - latest_notify_at >= reminder_after
+        ):
+            reminder_bucket = int(now // max(reminder_after, 1.0))
+            reminder_key = f"reminder:{state}:{int(latest_notify_at)}:{reminder_bucket}"
+            emit_internal_notify(
+                session,
+                event="reminder",
+                summary=_watchdog_reminder_summary(session, state),
+                status="warning",
+                turn_id=turn_id,
+                cwd=str(meta.get("cwd") or ""),
+                source="watchdog",
+                notification_key=reminder_key,
+            )
         time.sleep(max(0.5, poll_interval))
 
 
@@ -1640,8 +1791,8 @@ def ensure_session(
     existing_meta = load_meta(session)
     if existing_meta and session_launch_mode(existing_meta) != "managed":
         raise OrcheError(
-            f"Session {session} is already bound to native shortcut mode. "
-            "Use the shortcut command again or close the session and recreate it with session-new."
+            f"Session {session} is already bound to native open mode. "
+            "Reuse it through orche open with the same raw agent args, or close it and recreate it."
         )
     existing_cwd = Path(str(existing_meta.get("cwd") or "")).resolve() if existing_meta.get("cwd") else None
     if existing_cwd is not None and existing_cwd != cwd:
@@ -1659,7 +1810,7 @@ def ensure_session(
     provided_notify_to = str(notify_to or "").strip()
     provided_notify_target = str(notify_target or "").strip()
     if (not provided_notify_to or not provided_notify_target) and not existing_notify_binding:
-        raise OrcheError("session-new requires both --notify-to and --notify-target")
+        raise OrcheError("managed sessions require both notify_to and notify_target")
     provided_notify_binding = (
         build_notify_binding(provided_notify_to, provided_notify_target)
         if provided_notify_to and provided_notify_target
@@ -1886,7 +2037,7 @@ def resolve_session_context(
     if require_existing and not meta:
         raise OrcheError(f"Unknown session: {session}")
     if require_cwd_agent and (cwd is None or agent is None):
-        raise OrcheError(f"Session {session} is missing cwd/agent context; create it with session-new first")
+        raise OrcheError(f"Session {session} is missing cwd/agent context; open it first")
     return cwd, agent, meta
 
 

@@ -30,6 +30,40 @@ def test_claim_turn_notification_deduplicates_same_event(xdg_runtime):
     assert backend.claim_turn_notification("demo-session", "completed", turn_id="turn-1", source="hook") is False
 
 
+def test_claim_turn_notification_deduplicates_same_notification_key(xdg_runtime):
+    backend.save_meta(
+        "demo-session",
+        {
+            "session": "demo-session",
+            "pending_turn": {
+                "turn_id": "turn-1",
+                "notifications": {},
+            },
+        },
+    )
+
+    assert (
+        backend.claim_turn_notification(
+            "demo-session",
+            "reminder",
+            turn_id="turn-1",
+            source="watchdog",
+            notification_key="reminder:needs-input:bucket-1",
+        )
+        is True
+    )
+    assert (
+        backend.claim_turn_notification(
+            "demo-session",
+            "reminder",
+            turn_id="turn-1",
+            source="watchdog",
+            notification_key="reminder:needs-input:bucket-1",
+        )
+        is False
+    )
+
+
 def test_run_session_watchdog_emits_stalled_event(xdg_runtime, monkeypatch):
     clock = FakeClock()
     backend.save_meta(
@@ -230,5 +264,111 @@ def test_run_session_watchdog_emits_failed_event_when_agent_exits(xdg_runtime, m
             "turn-2",
             "/repo",
             "watchdog",
+        )
+    ]
+
+
+def test_run_session_watchdog_emits_periodic_reminder_after_last_notify(xdg_runtime, monkeypatch):
+    clock = FakeClock()
+    clock.now = 602.0
+    backend.save_meta(
+        "demo-session",
+        {
+            "session": "demo-session",
+            "cwd": "/repo",
+            "agent": "codex",
+            "pane_id": "%1",
+            "pending_turn": {
+                "turn_id": "turn-3",
+                "prompt": "do the work",
+                "before_capture": "",
+                "submitted_at": 0.0,
+                "pane_id": "%1",
+                "notifications": {
+                    "stalled": {
+                        "at": 1.0,
+                        "source": "watchdog",
+                        "status": "warning",
+                        "summary": "working",
+                    }
+                },
+                "watchdog": {
+                    "state": "stalled",
+                    "last_event": "stalled",
+                    "last_event_at": 1.0,
+                    "last_progress_at": 0.0,
+                    "last_sample_at": 0.0,
+                    "last_signature": "sig-1",
+                    "last_cursor_x": "1",
+                    "last_cursor_y": "1",
+                    "idle_samples": 2,
+                    "stop_requested": False,
+                },
+            },
+        },
+    )
+
+    emitted = []
+
+    def fake_sample(session: str, *, pane_id: str = ""):
+        return {
+            "signature": "sig-1",
+            "cursor_x": "1",
+            "cursor_y": "1",
+            "cpu_percent": 0.0,
+            "agent_running": True,
+            "capture": "still waiting",
+            "pane_id": pane_id or "%1",
+            "pane_in_mode": "0",
+            "pane_dead": "0",
+            "pane_current_command": "codex",
+            "capture_bytes": 13,
+            "tail": "still waiting",
+        }
+
+    def fake_emit(
+        session: str,
+        *,
+        event: str,
+        summary: str,
+        status: str,
+        turn_id: str = "",
+        cwd: str = "",
+        source: str = "",
+        notification_key: str = "",
+    ):
+        emitted.append((event, summary, status, turn_id, cwd, source, notification_key))
+        if event == "reminder":
+            meta = backend.load_meta(session)
+            meta.pop("pending_turn", None)
+            backend.save_meta(session, meta)
+        return True
+
+    monkeypatch.setattr(backend, "sample_watchdog_state", fake_sample)
+    monkeypatch.setattr(backend, "emit_internal_notify", fake_emit)
+    monkeypatch.setattr(backend.time, "time", clock.time)
+    monkeypatch.setattr(backend.time, "sleep", clock.sleep)
+
+    result = backend.run_session_watchdog(
+        "demo-session",
+        turn_id="turn-3",
+        poll_interval=1.0,
+        stalled_after=45.0,
+        needs_input_after=10_000.0,
+        reminder_after=600.0,
+    )
+
+    assert result == "completed"
+    assert emitted == [
+        (
+            "reminder",
+            "Session demo-session is still in stalled state and has gone 10 minutes without a successful notify. "
+            "The agent session has shown no visible progress for an extended period. To reconnect with it, run "
+            "`orche status demo-session` and `orche read demo-session --lines 120`.",
+            "warning",
+            "turn-3",
+            "/repo",
+            "watchdog",
+            "reminder:stalled:1:1",
         )
     ]

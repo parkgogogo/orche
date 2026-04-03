@@ -16,7 +16,7 @@ class StubHTTPClientFactory:
         return self.client
 
 
-def test_notify_hidden_command_reads_stdin_and_sends_message(xdg_runtime, monkeypatch):
+def test_notify_hidden_command_requires_explicit_route(xdg_runtime, monkeypatch):
     fake_client = FakeHTTPClient()
     monkeypatch.setattr("notify.discord.UrllibHTTPClient", StubHTTPClientFactory(fake_client))
     write_runtime_config(
@@ -33,6 +33,31 @@ def test_notify_hidden_command_reads_stdin_and_sends_message(xdg_runtime, monkey
     result = CliRunner().invoke(
         app,
         ["notify-internal"],
+        input='{"event":"turn-complete","summary":"Done"}',
+    )
+
+    assert result.exit_code == 0
+    assert "notify skipped: no notifier routes resolved" in result.output
+    assert fake_client.requests == []
+
+
+def test_notify_hidden_command_sends_message_with_explicit_channel(xdg_runtime, monkeypatch):
+    fake_client = FakeHTTPClient()
+    monkeypatch.setattr("notify.discord.UrllibHTTPClient", StubHTTPClientFactory(fake_client))
+    write_runtime_config(
+        xdg_runtime["config_path"],
+        {
+            "notify_enabled": True,
+            "discord_bot_token": "bot-token",
+            "discord_channel_id": "1234567890",
+            "session": "repo-codex-main",
+            "cwd": "/tmp/repo",
+        },
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["notify-internal", "--channel-id", "1234567890"],
         input='{"event":"turn-complete","summary":"Done"}',
     )
 
@@ -69,8 +94,9 @@ def test_notify_hidden_command_verbose_prints_config_and_event(xdg_runtime, monk
     assert "notify event:" in result.output
     assert "summary:" in result.output
     assert "Done" in result.output
-    assert "discord: 1234567890" in result.output
-    assert "notify ok: provider=discord detail=200" in result.output
+    assert "routes:" in result.output
+    assert "<none>" in result.output
+    assert "notify skipped: no notifier routes resolved" in result.output
 
 
 def test_notify_hidden_command_failure_prints_error_and_returns_nonzero(xdg_runtime, monkeypatch):
@@ -93,8 +119,8 @@ def test_notify_hidden_command_failure_prints_error_and_returns_nonzero(xdg_runt
         input='{"event":"turn-complete","summary":"Done"}',
     )
 
-    assert result.exit_code == 1
-    assert "notify failed: provider=discord detail=discord delivery failed with status=403" in result.output
+    assert result.exit_code == 0
+    assert "notify skipped: no notifier routes resolved" in result.output
 
 
 def test_notify_hidden_command_prefers_session_meta_channel_over_global_config(xdg_runtime, monkeypatch):

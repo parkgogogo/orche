@@ -36,8 +36,6 @@ def _require_e2e_environment() -> None:
         pytest.skip("tmux is required for notify e2e tests")
     if shutil.which("codex") is None:
         pytest.skip("codex is required for notify e2e tests")
-    if not (Path.home() / ".smux" / "bin" / "tmux-bridge").exists():
-        pytest.skip("tmux-bridge is required for notify e2e tests")
 
 
 def _run_orche(args: List[str], *, env: Dict[str, str], input_text: str | None = None, timeout: float = E2E_TIMEOUT) -> subprocess.CompletedProcess[str]:
@@ -62,7 +60,7 @@ def _wait_for_output(env: Dict[str, str], session: str, *needles: str, timeout: 
     deadline = time.time() + timeout
     last_output = ""
     while time.time() < deadline:
-        result = _run_orche(["read", "--session", session, "--lines", "240"], env=env, timeout=30)
+        result = _run_orche(["read", session, "--lines", "240"], env=env, timeout=30)
         _assert_ok(result)
         last_output = result.stdout
         if all(needle in last_output for needle in needles):
@@ -115,7 +113,7 @@ class E2EContext:
     ) -> str:
         session = f"orche-e2e-{suffix}-{uuid.uuid4().hex[:8]}"
         args = [
-            "session-new",
+            "open",
             "--cwd",
             str(REPO_ROOT),
             "--agent",
@@ -123,7 +121,8 @@ class E2EContext:
             "--name",
             session,
         ]
-        args.extend(["--notify-to", notify_to, "--notify-target", notify_target])
+        provider = "tmux" if notify_to == "tmux-bridge" else notify_to
+        args.extend(["--notify", f"{provider}:{notify_target}"])
         result = self.run(args, timeout=E2E_TIMEOUT)
         _assert_ok(result)
         self.sessions.append(session)
@@ -131,7 +130,7 @@ class E2EContext:
 
     def close_all(self) -> None:
         for session in reversed(self.sessions):
-            self.run(["close", "--session", session], timeout=30)
+            self.run(["close", session], timeout=30)
 
     def notify(self, session: str, summary: str, *, channel_id: str = "", verbose: bool = False) -> subprocess.CompletedProcess[str]:
         args = ["notify-internal", "--session", session]

@@ -318,7 +318,7 @@ def test_ensure_session_requires_notify_binding(xdg_runtime, tmp_path, monkeypat
     monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%1")
     monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%1")
 
-    with pytest.raises(backend.OrcheError, match="session-new requires both --notify-to and --notify-target"):
+    with pytest.raises(backend.OrcheError, match="managed sessions require both notify_to and notify_target"):
         backend.ensure_session("notify-bound", tmp_path, "codex")
 
 

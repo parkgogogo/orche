@@ -12,42 +12,6 @@ import cli
 from cli import app
 
 
-def test_history_command_shows_recent_entries(xdg_runtime):
-    backend.append_history_entry(
-        "demo-session",
-        {
-            "timestamp": "2026-04-01T12:34:56",
-            "action": "send",
-            "session": "demo-session",
-            "prompt": "echo hello",
-        },
-    )
-    backend.append_history_entry(
-        "demo-session",
-        {
-            "timestamp": "2026-04-01T12:35:10",
-            "action": "cancel",
-            "session": "demo-session",
-        },
-    )
-
-    result = CliRunner().invoke(app, ["history", "--session", "demo-session", "--limit", "20"])
-
-    assert result.exit_code == 0
-    assert "2026-04-01T12:34:56" in result.stdout
-    assert "send" in result.stdout
-    assert 'prompt: "echo hello"' in result.stdout
-    assert "2026-04-01T12:35:10" in result.stdout
-    assert "cancel" in result.stdout
-
-
-def test_history_command_shows_empty_message(xdg_runtime):
-    result = CliRunner().invoke(app, ["history", "--session", "missing-session"])
-
-    assert result.exit_code == 0
-    assert "No history yet" in result.stdout
-
-
 def test_backend_list_sessions_returns_sorted_metadata(xdg_runtime):
     backend.save_meta(
         "zeta-session",
@@ -95,7 +59,7 @@ def test_current_session_id_falls_back_to_tmux_pane_mapping(xdg_runtime, monkeyp
     assert backend.current_session_id() == "mapped-session"
 
 
-def test_sessions_list_command_shows_sessions(xdg_runtime):
+def test_list_command_shows_sessions(xdg_runtime):
     backend.save_meta(
         "demo-session",
         {
@@ -106,32 +70,11 @@ def test_sessions_list_command_shows_sessions(xdg_runtime):
         },
     )
 
-    result = CliRunner().invoke(app, ["sessions", "list"])
+    result = CliRunner().invoke(app, ["list"])
 
     assert result.exit_code == 0
     assert "demo-session" in result.stdout
     assert "/repo/demo" in result.stdout
-
-
-def test_sessions_clearall_command_closes_all_sessions(xdg_runtime, monkeypatch):
-    runner = CliRunner()
-    closed = []
-
-    monkeypatch.setattr(
-        cli,
-        "list_sessions",
-        lambda: [
-            {"session": "alpha-session"},
-            {"session": "beta-session"},
-        ],
-    )
-    monkeypatch.setattr(cli, "close_session", lambda session: closed.append(session) or "-")
-
-    result = runner.invoke(app, ["sessions", "clearall"])
-
-    assert result.exit_code == 0
-    assert closed == ["alpha-session", "beta-session"]
-    assert "Cleared 2 session(s)" in result.stdout
 
 
 def test_config_supports_discord_mention_user_id(xdg_runtime):
@@ -201,15 +144,6 @@ def test_version_works_without_subcommand(xdg_runtime):
     assert result.stdout.strip().startswith("orche ")
 
 
-def test_session_id_reads_orche_session_env(xdg_runtime, monkeypatch):
-    monkeypatch.setenv("ORCHE_SESSION", "demo-session")
-
-    result = CliRunner().invoke(app, ["session-id"])
-
-    assert result.exit_code == 0
-    assert result.stdout.strip() == "demo-session"
-
-
 def test_whoami_falls_back_to_backend_resolution(xdg_runtime, monkeypatch):
     monkeypatch.setattr(cli, "current_session_id", lambda: "resolved-from-tmux")
 
@@ -219,42 +153,42 @@ def test_whoami_falls_back_to_backend_resolution(xdg_runtime, monkeypatch):
     assert result.stdout.strip() == "resolved-from-tmux"
 
 
-def test_session_new_expands_cwd_user_home(xdg_runtime, monkeypatch):
+def test_open_expands_cwd_user_home_for_native_session(xdg_runtime, monkeypatch):
     runner = CliRunner()
     project_dir = xdg_runtime["home"] / "project"
     project_dir.mkdir()
-    captured: dict[str, Path] = {}
+    captured: dict[str, object] = {}
 
-    def fake_ensure_session(session, cwd, agent, **kwargs):
+    def fake_ensure_native_session(session, cwd, agent, **kwargs):
         captured["session"] = session
         captured["cwd"] = cwd
         captured["agent"] = agent
+        captured["cli_args"] = kwargs.get("cli_args")
         return "%1"
 
-    monkeypatch.setattr(cli, "ensure_session", fake_ensure_session)
+    monkeypatch.setattr(cli, "ensure_native_session", fake_ensure_native_session)
     monkeypatch.setattr(cli, "append_action_history", lambda *args, **kwargs: None)
 
     result = runner.invoke(
         app,
         [
-            "session-new",
+            "open",
             "--cwd",
             "~/project",
             "--agent",
             "codex",
-            "--notify-to",
-            "discord",
-            "--notify-target",
-            "1234567890",
+            "--model",
+            "gpt-5.4",
         ],
     )
 
     assert result.exit_code == 0
     assert captured["cwd"] == project_dir.resolve()
     assert captured["agent"] == "codex"
+    assert captured["cli_args"] == ["--model", "gpt-5.4"]
 
 
-def test_session_new_passes_notify_binding(xdg_runtime, monkeypatch):
+def test_open_passes_notify_binding_to_managed_session(xdg_runtime, monkeypatch):
     runner = CliRunner()
     project_dir = xdg_runtime["home"] / "project"
     project_dir.mkdir()
@@ -273,15 +207,13 @@ def test_session_new_passes_notify_binding(xdg_runtime, monkeypatch):
     result = runner.invoke(
         app,
         [
-            "session-new",
+            "open",
             "--cwd",
             "~/project",
             "--agent",
             "codex",
-            "--notify-to",
-            "tmux-bridge",
-            "--notify-target",
-            "target-session",
+            "--notify",
+            "tmux:target-session",
         ],
     )
 
@@ -290,7 +222,7 @@ def test_session_new_passes_notify_binding(xdg_runtime, monkeypatch):
     assert captured["kwargs"]["notify_target"] == "target-session"
 
 
-def test_session_new_rejects_partial_notify_binding(xdg_runtime):
+def test_open_rejects_invalid_notify_binding(xdg_runtime):
     runner = CliRunner()
     project_dir = xdg_runtime["home"] / "project"
     project_dir.mkdir()
@@ -298,21 +230,21 @@ def test_session_new_rejects_partial_notify_binding(xdg_runtime):
     result = runner.invoke(
         app,
         [
-            "session-new",
+            "open",
             "--cwd",
             "~/project",
             "--agent",
             "codex",
-            "--notify-to",
+            "--notify",
             "discord",
         ],
     )
 
     assert result.exit_code == 1
-    assert "session-new requires both --notify-to and --notify-target" in result.output
+    assert "--notify must be in the form <provider>:<target>" in result.output
 
 
-def test_session_new_requires_notify_binding(xdg_runtime):
+def test_open_rejects_notify_when_raw_agent_args_are_present(xdg_runtime):
     runner = CliRunner()
     project_dir = xdg_runtime["home"] / "project"
     project_dir.mkdir()
@@ -320,139 +252,82 @@ def test_session_new_requires_notify_binding(xdg_runtime):
     result = runner.invoke(
         app,
         [
-            "session-new",
+            "open",
             "--cwd",
             "~/project",
             "--agent",
             "codex",
+            "--notify",
+            "discord:1234567890",
+            "--model",
+            "gpt-5.4",
         ],
     )
 
     assert result.exit_code == 1
-    assert "session-new requires both --notify-to and --notify-target" in result.output
+    assert "open does not support combining --notify with raw agent args" in result.output
 
 
-def test_codex_command_passes_native_args_and_attaches(xdg_runtime, monkeypatch):
+def test_attach_command_uses_session_name_positionally(xdg_runtime, monkeypatch):
+    runner = CliRunner()
+    recorded: dict[str, object] = {}
+
+    monkeypatch.setattr(cli, "attach_session", lambda session, **kwargs: recorded.update({"session": session, **kwargs}) or "@1")
+    monkeypatch.setattr(cli, "_record_session_action", lambda session, action, **kwargs: recorded.update({"action": action}))
+
+    result = runner.invoke(app, ["attach", "demo-session"])
+
+    assert result.exit_code == 0
+    assert recorded["session"] == "demo-session"
+    assert recorded["action"] == "attach"
+
+
+def test_prompt_command_uses_positionals(xdg_runtime, monkeypatch):
     runner = CliRunner()
     project_dir = xdg_runtime["home"] / "project"
     project_dir.mkdir()
-    captured: dict[str, object] = {}
-    attached: dict[str, object] = {}
 
-    def fake_ensure_native_session(session, cwd, agent, **kwargs):
-        captured["session"] = session
-        captured["cwd"] = cwd
-        captured["agent"] = agent
-        captured["cli_args"] = kwargs.get("cli_args")
-        return "%1"
-
-    monkeypatch.setattr(cli, "ensure_native_session", fake_ensure_native_session)
-    monkeypatch.setattr(cli, "append_action_history", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cli, "attach_session", lambda session, **kwargs: attached.update({"session": session, **kwargs}) or "@1")
-
-    result = runner.invoke(
-        app,
-        [
-            "codex",
-            "--cwd",
-            "~/project",
-            "--session-name",
-            "custom-codex",
-            "--model",
-            "gpt-5.4",
-            "--approval-mode",
-            "on-request",
-        ],
+    monkeypatch.setattr(
+        cli,
+        "resolve_session_context",
+        lambda **kwargs: (project_dir.resolve(), "codex", {"session": "demo-session"}),
     )
-
-    assert result.exit_code == 0
-    assert captured["cwd"] == project_dir.resolve()
-    assert captured["agent"] == "codex"
-    assert captured["session"] == "custom-codex"
-    assert captured["cli_args"] == ["--model", "gpt-5.4", "--approval-mode", "on-request"]
-    assert attached["session"] == "custom-codex"
-    assert attached["pane_id"] == "%1"
-
-
-def test_codex_command_defaults_to_current_directory_and_attaches(xdg_runtime, monkeypatch):
-    runner = CliRunner()
-    project_dir = xdg_runtime["home"] / "project"
-    project_dir.mkdir()
-    monkeypatch.chdir(project_dir)
     captured: dict[str, object] = {}
-    attached: dict[str, object] = {}
+    monkeypatch.setattr(cli, "send_prompt", lambda session, cwd, agent, message: captured.update({"session": session, "cwd": cwd, "agent": agent, "message": message}) or "%1")
 
-    def fake_ensure_native_session(session, cwd, agent, **kwargs):
-        captured["session"] = session
-        captured["cwd"] = cwd
-        captured["agent"] = agent
-        return "%7"
-
-    monkeypatch.setattr(cli, "ensure_native_session", fake_ensure_native_session)
-    monkeypatch.setattr(cli, "append_action_history", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cli, "attach_session", lambda session, **kwargs: attached.update({"session": session, **kwargs}) or "@7")
-
-    result = runner.invoke(app, ["codex"])
+    result = runner.invoke(app, ["prompt", "demo-session", "review auth changes"])
 
     assert result.exit_code == 0
-    assert captured["cwd"] == project_dir.resolve()
-    assert captured["agent"] == "codex"
-    assert captured["session"] == "project-codex-main"
-    assert attached["session"] == "project-codex-main"
-    assert attached["pane_id"] == "%7"
+    assert captured == {
+        "session": "demo-session",
+        "cwd": project_dir.resolve(),
+        "agent": "codex",
+        "message": "review auth changes",
+    }
 
 
-def test_claude_aliases_use_claude_agent(xdg_runtime, monkeypatch):
+def test_input_and_key_commands_use_positionals(xdg_runtime, monkeypatch):
     runner = CliRunner()
     project_dir = xdg_runtime["home"] / "project"
     project_dir.mkdir()
-    calls: list[tuple[str, str]] = []
-    attached: list[str] = []
-
-    def fake_ensure_native_session(session, cwd, agent, **kwargs):
-        calls.append((session, agent))
-        return "%1"
-
-    monkeypatch.setattr(cli, "ensure_native_session", fake_ensure_native_session)
+    monkeypatch.setattr(
+        cli,
+        "resolve_session_context",
+        lambda **kwargs: (project_dir.resolve(), "codex", {"session": "demo-session"}),
+    )
+    input_calls: list[tuple[str, str]] = []
+    key_calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(cli, "bridge_type", lambda session, text: input_calls.append((session, text)))
+    monkeypatch.setattr(cli, "bridge_keys", lambda session, keys: key_calls.append((session, list(keys))))
     monkeypatch.setattr(cli, "append_action_history", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cli, "attach_session", lambda session, **kwargs: attached.append(session) or "@1")
 
-    for command_name in ("claude", "cc"):
-        result = runner.invoke(app, [command_name, "--cwd", "~/project"])
-        assert result.exit_code == 0
+    input_result = runner.invoke(app, ["input", "demo-session", "yes"])
+    key_result = runner.invoke(app, ["key", "demo-session", "Down", "Enter"])
 
-    assert calls == [
-        ("project-claude-main", "claude"),
-        ("project-claude-main", "claude"),
-    ]
-    assert attached == [
-        "project-claude-main",
-        "project-claude-main",
-    ]
-
-
-def test_cc_help_is_passed_through_to_native_cli(xdg_runtime, monkeypatch):
-    runner = CliRunner()
-    project_dir = xdg_runtime["home"] / "project"
-    project_dir.mkdir()
-    captured: dict[str, object] = {}
-
-    def fake_ensure_native_session(session, cwd, agent, **kwargs):
-        captured["session"] = session
-        captured["cwd"] = cwd
-        captured["agent"] = agent
-        captured["cli_args"] = kwargs.get("cli_args")
-        return "%9"
-
-    monkeypatch.setattr(cli, "ensure_native_session", fake_ensure_native_session)
-    monkeypatch.setattr(cli, "append_action_history", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cli, "attach_session", lambda *args, **kwargs: "@9")
-
-    result = runner.invoke(app, ["cc", "--cwd", "~/project", "--help"])
-
-    assert result.exit_code == 0
-    assert captured["agent"] == "claude"
-    assert captured["cli_args"] == ["--help"]
+    assert input_result.exit_code == 0
+    assert key_result.exit_code == 0
+    assert input_calls == [("demo-session", "yes")]
+    assert key_calls == [("demo-session", ["Down", "Enter"])]
 
 
 def test_unknown_command_shows_clean_error(xdg_runtime, capsys, monkeypatch):

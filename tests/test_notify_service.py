@@ -83,6 +83,7 @@ def test_dispatch_payload_builds_message_and_uses_service():
         '{"event":"turn-complete","summary":"done"}',
         runtime_config={"discord_channel_id": "123", "discord_bot_token": "token"},
         summary_loader=lambda session: "",
+        explicit_channel_id="123",
         explicit_session="demo",
         service=service,
     )
@@ -258,7 +259,7 @@ def test_resolve_routes_falls_back_to_global_target_when_binding_target_missing(
         notify_config=NotifyConfig(provider="discord"),
     )
 
-    assert routes == (ResolvedRoute(provider="discord", target="123", session="demo"),)
+    assert routes == ()
 
 
 def test_resolve_routes_ignores_empty_tmux_binding_and_falls_back_to_global_discord():
@@ -273,7 +274,7 @@ def test_resolve_routes_ignores_empty_tmux_binding_and_falls_back_to_global_disc
         notify_config=NotifyConfig(provider="discord"),
     )
 
-    assert routes == (ResolvedRoute(provider="discord", target="123", session="demo"),)
+    assert routes == ()
 
 
 def test_resolve_routes_uses_global_tmux_provider_with_target():
@@ -288,7 +289,7 @@ def test_resolve_routes_uses_global_tmux_provider_with_target():
         notify_config=NotifyConfig(provider="tmux-bridge"),
     )
 
-    assert routes == (ResolvedRoute(provider="tmux-bridge", target="target-session", session="demo"),)
+    assert routes == ()
 
 
 def test_resolve_routes_skips_global_tmux_provider_without_target():
