@@ -1,4 +1,4 @@
-"""tmux-orche: tmux-backed Codex orchestration."""
+"""tmux-orche: tmux-backed CLI agent orchestration."""
 
 from version import __version__
 

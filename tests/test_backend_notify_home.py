@@ -109,7 +109,7 @@ def test_ensure_session_reuses_managed_codex_home_with_normalized_path(xdg_runti
     monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", source_home)
     monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", linked_root)
     monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%1")
-    monkeypatch.setattr(backend, "ensure_codex_running", lambda *args, **kwargs: "%1")
+    monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%1")
 
     managed_home = backend.ensure_managed_codex_home("demo-session", cwd=tmp_path, discord_channel_id="123")
     backend.save_meta(
@@ -145,7 +145,7 @@ def test_ensure_session_stores_absolute_cwd_in_metadata(xdg_runtime, tmp_path, m
     monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", source_home)
     monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
     monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%1")
-    monkeypatch.setattr(backend, "ensure_codex_running", lambda *args, **kwargs: "%1")
+    monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%1")
 
     relative_cwd = Path(".")
     original_cwd = Path.cwd()
@@ -287,7 +287,7 @@ def test_ensure_session_rejects_rebinding_notify_binding(xdg_runtime, tmp_path, 
     monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", source_home)
     monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
     monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%1")
-    monkeypatch.setattr(backend, "ensure_codex_running", lambda *args, **kwargs: "%1")
+    monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%1")
 
     backend.ensure_session("notify-bound", tmp_path, "codex", notify_to="discord", notify_target="123")
 
@@ -304,7 +304,7 @@ def test_ensure_session_rejects_adding_tmux_target_after_creation(xdg_runtime, t
     monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", source_home)
     monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
     monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%1")
-    monkeypatch.setattr(backend, "ensure_codex_running", lambda *args, **kwargs: "%1")
+    monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%1")
 
     backend.ensure_session("notify-bound", tmp_path, "codex")
 
@@ -321,7 +321,7 @@ def test_ensure_session_stores_tmux_bridge_notify_binding(xdg_runtime, tmp_path,
     monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", source_home)
     monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
     monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%1")
-    monkeypatch.setattr(backend, "ensure_codex_running", lambda *args, **kwargs: "%1")
+    monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%1")
 
     backend.ensure_session(
         "notify-bound",

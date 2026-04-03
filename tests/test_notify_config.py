@@ -29,7 +29,7 @@ def test_load_notify_config_defaults_are_stable(monkeypatch):
     config = load_notify_config({})
 
     assert config.provider == "discord"
-    assert config.default_message_prefix == "Codex turn complete"
+    assert config.default_message_prefix == "Agent turn complete"
     assert config.discord.mention_user_id == DEFAULT_MENTION_USER_ID
 
 

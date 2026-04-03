@@ -14,6 +14,8 @@ SUPPORTED_EVENTS = {
     "turn_complete",
     "task_complete",
     "task-complete",
+    "stop",
+    "subagentstop",
 }
 
 
@@ -162,11 +164,13 @@ def _event_name(payload: Mapping[str, Any]) -> str:
         payload.get("event"),
         payload.get("type"),
         payload.get("kind"),
+        payload.get("hook_event_name"),
         payload.get("notification_type"),
         payload.get("name"),
         _payload_value(payload, ("notification", "event")),
         _payload_value(payload, ("payload", "event")),
-    )
+        _payload_value(payload, ("payload", "hook_event_name")),
+    ).lower()
 
 
 def _assistant_message(payload: Mapping[str, Any]) -> str:

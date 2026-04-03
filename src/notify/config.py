@@ -60,7 +60,7 @@ class NotifyConfig:
     provider: str = "discord"
     include_cwd: bool = True
     include_session: bool = True
-    default_message_prefix: str = "Codex turn complete"
+    default_message_prefix: str = "Agent turn complete"
     max_message_chars: int = 1500
     summary_max_chars: int = 1200
     discord: DiscordNotifyConfig = field(default_factory=DiscordNotifyConfig)
@@ -102,8 +102,8 @@ def load_notify_config(
         provider=provider,
         include_cwd=_as_bool(values.get("notify_include_cwd"), True),
         include_session=_as_bool(values.get("notify_include_session"), True),
-        default_message_prefix=str(values.get("notify_default_message_prefix") or "Codex turn complete").strip()
-        or "Codex turn complete",
+        default_message_prefix=str(values.get("notify_default_message_prefix") or "Agent turn complete").strip()
+        or "Agent turn complete",
         max_message_chars=max(1, _as_int(values.get("notify_max_message_chars"), 1500)),
         summary_max_chars=max(1, _as_int(values.get("notify_summary_max_chars"), 1200)),
         discord=discord,
