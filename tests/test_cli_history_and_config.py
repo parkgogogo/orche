@@ -136,14 +136,14 @@ def test_config_rejects_discord_channel_id_shortcut(xdg_runtime):
     list_result = runner.invoke(app, ["config", "list"])
 
     assert set_result.exit_code == 1
-    assert "Unsupported config key: discord.channel-id" in set_result.stdout
+    assert "Unsupported config key: discord.channel-id" in set_result.output
     assert get_result.exit_code == 1
-    assert "Unsupported config key: discord.channel-id" in get_result.stdout
+    assert "Unsupported config key: discord.channel-id" in get_result.output
     assert list_result.exit_code == 0
-    assert "discord.channel-id" not in list_result.stdout
+    assert "discord.channel-id" not in list_result.output
 
 
-def test_build_status_uses_session_metadata_discord_session(xdg_runtime):
+def test_build_status_uses_session_metadata_discord_session(xdg_runtime, monkeypatch):
     backend.save_meta(
         "demo-session",
         {
@@ -165,6 +165,7 @@ def test_build_status_uses_session_metadata_discord_session(xdg_runtime):
             "discord_session": "agent:main:discord:channel:2222222222",
         }
     )
+    monkeypatch.setattr(backend, "bridge_resolve", lambda session: "")
 
     status = backend.build_status("demo-session")
 
@@ -255,7 +256,7 @@ def test_session_new_rejects_partial_notify_binding(xdg_runtime):
     )
 
     assert result.exit_code == 1
-    assert "--notify-to and --notify-target must be provided together" in result.stdout
+    assert "--notify-to and --notify-target must be provided together" in result.output
 
 
 def test_codex_command_passes_native_args_and_attaches(xdg_runtime, monkeypatch):
