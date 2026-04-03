@@ -18,6 +18,7 @@ from rich.text import Text
 from backend import (
     BACKEND,
     OrcheError,
+    attach_session,
     append_action_history,
     bridge_keys,
     bridge_read,
@@ -26,6 +27,7 @@ from backend import (
     cancel_session,
     close_session,
     default_session_name,
+    ensure_native_session,
     ensure_session,
     get_config_value,
     load_config,
@@ -268,6 +270,31 @@ def _start_agent_session(
     console.print(session)
 
 
+def _default_cwd() -> Path:
+    return Path.cwd().resolve()
+
+
+def _open_agent_session(
+    *,
+    cwd: Optional[Path],
+    agent: str,
+    session_name: Optional[str],
+    cli_args: list[str],
+) -> None:
+    resolved_cwd = _resolve_path(cwd or _default_cwd(), must_exist=True, require_dir=True)
+    if resolved_cwd is None:
+        raise OrcheError("Failed to resolve cwd")
+    session = _session_name(session_name, resolved_cwd, agent)
+    pane_id = ensure_native_session(
+        session,
+        resolved_cwd,
+        agent,
+        cli_args=cli_args,
+    )
+    append_action_history(session, resolved_cwd, agent, "attach", pane_id=pane_id)
+    attach_session(session, pane_id=pane_id)
+
+
 def _render_status(info: dict) -> None:
     body = Text()
     body.append("Backend: ", style="bold cyan")
@@ -377,20 +404,16 @@ def session_new(
 
 def _agent_session_command(agent: str):
     def command(
-        cwd: Path = typer.Option(..., callback=_resolve_cwd, file_okay=False, dir_okay=True, resolve_path=False, help=f"Working directory for the {agent} session."),
-        name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-<agent>-main."),
-        runtime_home: Optional[Path] = typer.Option(None, "--runtime-home", "--codex-home", callback=_resolve_optional_path, resolve_path=False, help="Optional manual agent runtime home override. If omitted, orche manages a per-session runtime directory when the agent supports it."),
-        notify_to: Optional[str] = typer.Option(None, "--notify-to", help="Single notify provider to bind to this session."),
-        notify_target: Optional[str] = typer.Option(None, "--notify-target", help="Provider-specific notify target value."),
+        ctx: typer.Context,
+        cwd: Optional[Path] = typer.Option(None, callback=_resolve_cwd, file_okay=False, dir_okay=True, resolve_path=False, help=f"Working directory for the {agent} session. Defaults to the current directory."),
+        session_name: Optional[str] = typer.Option(None, "--session-name", help="Optional tmux session name override. Defaults to <repo>-<agent>-main."),
     ) -> None:
         try:
-            _start_agent_session(
+            _open_agent_session(
                 cwd=cwd,
                 agent=agent,
-                name=name,
-                runtime_home=runtime_home,
-                notify_to=notify_to,
-                notify_target=notify_target,
+                session_name=session_name,
+                cli_args=list(ctx.args),
             )
         except (OrcheError, subprocess.CalledProcessError) as exc:
             _handle_error(exc)
@@ -398,9 +421,30 @@ def _agent_session_command(agent: str):
     return command
 
 
-app.command("codex", help="Create or reuse a persistent Codex session.")(_agent_session_command("codex"))
-app.command("claude", help="Create or reuse a persistent Claude Code session.")(_agent_session_command("claude"))
-app.command("cc", help="Alias for claude.")(_agent_session_command("claude"))
+_NATIVE_SHORTCUT_CONTEXT = {
+    "allow_extra_args": True,
+    "ignore_unknown_options": True,
+}
+
+
+app.command(
+    "codex",
+    help="Run native Codex inside a named tmux session.",
+    context_settings=_NATIVE_SHORTCUT_CONTEXT,
+    add_help_option=False,
+)(_agent_session_command("codex"))
+app.command(
+    "claude",
+    help="Run native Claude Code inside a named tmux session.",
+    context_settings=_NATIVE_SHORTCUT_CONTEXT,
+    add_help_option=False,
+)(_agent_session_command("claude"))
+app.command(
+    "cc",
+    help="Alias for claude.",
+    context_settings=_NATIVE_SHORTCUT_CONTEXT,
+    add_help_option=False,
+)(_agent_session_command("claude"))
 
 
 @app.command("send")

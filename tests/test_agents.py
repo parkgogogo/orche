@@ -48,3 +48,22 @@ def test_ensure_session_supports_claude_agent(xdg_runtime, tmp_path, monkeypatch
     assert meta["runtime_home"].endswith("demo-claude")
     assert meta["runtime_label"] == "Claude settings"
     assert meta["notify_binding"]["provider"] == "discord"
+
+
+def test_ensure_native_session_supports_claude_agent_and_stores_native_args(xdg_runtime, tmp_path, monkeypatch):
+    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%8")
+    monkeypatch.setattr(backend, "ensure_native_agent_running", lambda *args, **kwargs: "%8")
+
+    pane_id = backend.ensure_native_session(
+        "demo-claude-native",
+        tmp_path,
+        "claude",
+        cli_args=["--print", "--help"],
+    )
+    meta = backend.load_meta("demo-claude-native")
+
+    assert pane_id == "%8"
+    assert meta["agent"] == "claude"
+    assert meta["launch_mode"] == "native"
+    assert meta["native_cli_args"] == ["--print", "--help"]
+    assert meta["runtime_home"] == ""

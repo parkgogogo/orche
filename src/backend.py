@@ -4,6 +4,7 @@ import contextlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -667,6 +668,24 @@ def bridge_keys(session: str, keys: Union[Iterable[str], str]) -> None:
     tmux_bridge("keys", session, *values, check=True, capture=True)
 
 
+def attach_session(session: str, *, pane_id: str = "") -> str:
+    resolved_pane_id = pane_id or bridge_resolve(session) or str(load_meta(session).get("pane_id") or "")
+    if not resolved_pane_id:
+        raise OrcheError(f"Unknown session: {session}")
+    info = get_pane_info(resolved_pane_id)
+    if info is None:
+        raise OrcheError(f"Pane disappeared before attach: {resolved_pane_id}")
+    window_id = str(info.get("window_id") or "").strip()
+    if not window_id:
+        raise OrcheError(f"Window not found for session: {session}")
+    tmux("select-window", "-t", window_id, check=True, capture=False)
+    if os.environ.get("TMUX"):
+        tmux("switch-client", "-t", TMUX_SESSION, check=True, capture=False)
+    else:
+        tmux("attach-session", "-t", TMUX_SESSION, check=True, capture=False)
+    return window_id
+
+
 def deliver_notify_to_session(session: str, prompt: str) -> str:
     target_session = session.strip()
     if not target_session:
@@ -997,6 +1016,163 @@ def remove_managed_codex_home(codex_home: str) -> None:
         remove_runtime_home(codex_home)
 
 
+def session_launch_mode(meta: Mapping[str, Any]) -> str:
+    mode = str(meta.get("launch_mode") or "").strip()
+    return mode or "managed"
+
+
+def native_cli_args_from_meta(meta: Mapping[str, Any]) -> List[str]:
+    raw_args = meta.get("native_cli_args")
+    if not isinstance(raw_args, list):
+        return []
+    values: List[str] = []
+    for value in raw_args:
+        text = str(value)
+        if text:
+            values.append(text)
+    return values
+
+
+def build_native_agent_launch_command(
+    plugin: AgentPlugin,
+    *,
+    cwd: Path,
+    cli_args: Sequence[str],
+) -> str:
+    command = [plugin.name, *[str(value) for value in cli_args]]
+    prefix = [f"cd {shlex.quote(str(cwd))}"]
+    prefix.append(f"exec {' '.join(shlex.quote(part) for part in command)}")
+    return " && ".join(prefix)
+
+
+def ensure_native_agent_running(
+    plugin: AgentPlugin,
+    session: str,
+    cwd: Path,
+    pane_id: str,
+    *,
+    cli_args: Sequence[str],
+) -> str:
+    if is_agent_running(plugin, pane_id):
+        return pane_id
+    info = get_pane_info(pane_id)
+    if info is None:
+        raise OrcheError(f"Pane disappeared before {plugin.display_name} launch: {pane_id}")
+    if info.get("pane_dead") == "1":
+        tmux("respawn-pane", "-k", "-t", pane_id, "-c", str(cwd), check=True, capture=True)
+    else:
+        tmux("send-keys", "-t", pane_id, "C-c", check=False, capture=True)
+        time.sleep(0.2)
+    launch_command = build_native_agent_launch_command(
+        plugin,
+        cwd=cwd,
+        cli_args=cli_args,
+    )
+    tmux(
+        "send-keys",
+        "-t",
+        pane_id,
+        "-l",
+        launch_command,
+        check=True,
+        capture=True,
+    )
+    tmux("send-keys", "-t", pane_id, "Enter", check=True, capture=True)
+    pane_id = wait_for_agent_ready(plugin, pane_id, cwd)
+    bridge_name_pane(pane_id, session)
+    meta = load_meta(session)
+    meta.update(
+        {
+            "backend": BACKEND,
+            "session": session,
+            "cwd": str(cwd),
+            "pane_id": pane_id,
+            "agent_started_at": time.time(),
+            "last_seen_at": time.time(),
+        }
+    )
+    save_meta(session, meta)
+    return pane_id
+
+
+def ensure_native_session(
+    session: str,
+    cwd: Path,
+    agent: str,
+    *,
+    cli_args: Sequence[str] = (),
+) -> str:
+    cwd = cwd.resolve()
+    plugin = get_agent(agent)
+    existing_meta = load_meta(session)
+    existing_cwd = Path(str(existing_meta.get("cwd") or "")).resolve() if existing_meta.get("cwd") else None
+    if existing_cwd is not None and existing_cwd != cwd:
+        raise OrcheError(
+            f"Session {session} is already bound to cwd={existing_cwd}. "
+            "Use the same --cwd or close the session and create a new one."
+        )
+    existing_agent = str(existing_meta.get("agent") or "").strip()
+    if existing_agent and existing_agent != plugin.name:
+        raise OrcheError(
+            f"Session {session} is already bound to agent={existing_agent}. "
+            "Close the session and create a new one for a different agent."
+        )
+    if existing_meta and session_launch_mode(existing_meta) != "native":
+        raise OrcheError(
+            f"Session {session} is already managed by orche session-new. "
+            "Use session-new commands for managed sessions or close the session and recreate it with the shortcut command."
+        )
+    provided_cli_args = [str(value) for value in cli_args]
+    existing_cli_args = native_cli_args_from_meta(existing_meta)
+    if existing_meta and provided_cli_args and provided_cli_args != existing_cli_args:
+        raise OrcheError(
+            f"Session {session} is already bound to native args={existing_cli_args!r}. "
+            "Use the same shortcut args or close the session and create a new one."
+        )
+    resolved_cli_args = existing_cli_args or provided_cli_args
+    pane_id = ensure_pane(session, cwd, agent)
+    pane_id = ensure_native_agent_running(
+        plugin,
+        session,
+        cwd,
+        pane_id,
+        cli_args=resolved_cli_args,
+    )
+    meta = load_meta(session)
+    meta.update(
+        {
+            "backend": BACKEND,
+            "session": session,
+            "cwd": str(cwd),
+            "agent": agent,
+            "pane_id": pane_id,
+            "launch_mode": "native",
+            "native_cli_args": list(resolved_cli_args),
+            "last_seen_at": time.time(),
+            "runtime_home": "",
+            "runtime_home_managed": False,
+            "runtime_label": "",
+            "codex_home": "",
+            "codex_home_managed": False,
+        }
+    )
+    meta.pop("discord_channel_id", None)
+    meta.pop("discord_session", None)
+    meta.pop("notify_routes", None)
+    meta.pop("notify_binding", None)
+    save_meta(session, meta)
+    update_runtime_config(
+        session=session,
+        cwd=cwd,
+        agent=agent,
+        pane_id=pane_id,
+        runtime_home="",
+        runtime_home_managed=False,
+        runtime_label="",
+    )
+    return pane_id
+
+
 def ensure_session(
     session: str,
     cwd: Path,
@@ -1011,6 +1187,11 @@ def ensure_session(
     cwd = cwd.resolve()
     plugin = get_agent(agent)
     existing_meta = load_meta(session)
+    if existing_meta and session_launch_mode(existing_meta) != "managed":
+        raise OrcheError(
+            f"Session {session} is already bound to native shortcut mode. "
+            "Use the shortcut command again or close the session and recreate it with session-new."
+        )
     existing_cwd = Path(str(existing_meta.get("cwd") or "")).resolve() if existing_meta.get("cwd") else None
     if existing_cwd is not None and existing_cwd != cwd:
         raise OrcheError(
@@ -1105,10 +1286,12 @@ def ensure_session(
             "cwd": str(cwd),
             "agent": agent,
             "pane_id": pane_id,
+            "launch_mode": "managed",
             "last_seen_at": time.time(),
         }
     )
     apply_runtime_to_meta(meta, agent=agent, runtime=runtime)
+    meta.pop("native_cli_args", None)
     meta.pop("discord_channel_id", None)
     meta.pop("discord_session", None)
     meta.pop("notify_routes", None)
@@ -1138,12 +1321,21 @@ def send_prompt(
     approve_all: bool = False,
 ) -> str:
     plugin = get_agent(agent)
-    pane_id = ensure_session(
-        session,
-        cwd,
-        agent,
-        approve_all=approve_all,
-    )
+    meta = load_meta(session)
+    if session_launch_mode(meta) == "native":
+        pane_id = ensure_native_session(
+            session,
+            cwd,
+            agent,
+            cli_args=native_cli_args_from_meta(meta),
+        )
+    else:
+        pane_id = ensure_session(
+            session,
+            cwd,
+            agent,
+            approve_all=approve_all,
+        )
     before_capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES)
     meta = load_meta(session)
     meta["pending_turn"] = {

@@ -55,6 +55,9 @@ class FakeOrcheRuntime:
         self.launch_commands: list[str] = []
         self.prompt_scenarios: dict[str, deque[str]] = {}
         self.force_startup_prompt: set[str] = set()
+        self.selected_window_id = ""
+        self.attached_session = ""
+        self.switched_session = ""
 
     def queue_prompt(self, session: str, scenario: str) -> None:
         self.prompt_scenarios.setdefault(session, deque()).append(scenario)
@@ -112,7 +115,8 @@ class FakeOrcheRuntime:
             pane.descendants = ["claude"]
             session = self._session_from_launch(launch_command)
             skip_permissions = "--dangerously-skip-permissions" in launch_command or "--permission-mode bypassPermissions" in launch_command
-            if session in self.force_startup_prompt or not skip_permissions:
+            managed_launch = "--settings" in launch_command or "ORCHE_SESSION=" in launch_command
+            if session in self.force_startup_prompt or (managed_launch and not skip_permissions):
                 pane.capture = self._approval_capture("edit")
                 pane.awaiting_approval = True
             else:
@@ -222,6 +226,15 @@ class FakeOrcheRuntime:
             if pane is None:
                 return self._result(argv, 1)
             return self._result(argv, stdout=pane.pane_id)
+        if command == "select-window":
+            self.selected_window_id = args[args.index("-t") + 1]
+            return self._result(argv)
+        if command == "attach-session":
+            self.attached_session = args[args.index("-t") + 1]
+            return self._result(argv)
+        if command == "switch-client":
+            self.switched_session = args[args.index("-t") + 1]
+            return self._result(argv)
         if command == "capture-pane":
             pane = self.panes.get(args[args.index("-t") + 1])
             if pane is None:
@@ -460,3 +473,32 @@ def test_claude_e2e_startup_times_out_if_permission_bypass_is_removed(xdg_runtim
 
     assert result.exit_code == 1
     assert "Timed out waiting for Claude Code to become ready" in result.output
+
+
+def test_codex_shortcut_attaches_interactive_session(xdg_runtime, tmp_path, monkeypatch):
+    runtime = make_runtime(monkeypatch, tmp_path)
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["codex", "--cwd", str(runtime.cwd), "--model", "gpt-5.4"])
+
+    assert result.exit_code == 0
+    assert runtime.attached_session == backend.TMUX_SESSION or runtime.switched_session == backend.TMUX_SESSION
+    assert runtime.selected_window_id == "@1"
+    assert "exec codex --model gpt-5.4" in runtime.launch_commands[-1]
+    assert "--dangerously-bypass-approvals-and-sandbox" not in runtime.launch_commands[-1]
+    assert "CODEX_HOME" not in runtime.launch_commands[-1]
+
+
+def test_cc_shortcut_defaults_to_current_directory_and_attaches(xdg_runtime, tmp_path, monkeypatch):
+    runtime = make_runtime(monkeypatch, tmp_path)
+    runner = CliRunner()
+    monkeypatch.chdir(runtime.cwd)
+
+    result = runner.invoke(app, ["cc", "--print", "--help"])
+
+    assert result.exit_code == 0
+    assert runtime.attached_session == backend.TMUX_SESSION or runtime.switched_session == backend.TMUX_SESSION
+    assert runtime.selected_window_id == "@1"
+    assert "exec claude --print --help" in runtime.launch_commands[-1]
+    assert "--dangerously-skip-permissions" not in runtime.launch_commands[-1]
+    assert "--settings" not in runtime.launch_commands[-1]

@@ -81,6 +81,10 @@ pip install .
   创建或复用一个持久化的 Codex tmux 会话。
 - `orche session-new --cwd /repo --agent claude --name repo-claude-main --notify-to discord --notify-target 123456789012345678`
   创建或复用一个持久化的 Claude Code tmux 会话。
+- `orche codex --cwd /repo --model gpt-5.4`
+  在 tmux 中运行原生 Codex，并使用该仓库的默认 session 名称。
+- `orche cc --session-name repo-claude-review --print --help`
+  在 tmux 中运行原生 Claude Code，额外 CLI 参数原样透传，并可选覆盖 session 名称。
 - `orche send --session repo-codex-main "review the recent auth changes"`
   向已有会话发送任务，并立即返回。
 - `orche status --session repo-codex-main`

@@ -81,6 +81,10 @@ pip install .
   Create or reuse a persistent Codex tmux session.
 - `orche session-new --cwd /repo --agent claude --name repo-claude-main --notify-to discord --notify-target 123456789012345678`
   Create or reuse a persistent Claude Code tmux session.
+- `orche codex --cwd /repo --model gpt-5.4`
+  Run native Codex inside tmux with the default session name for that repo.
+- `orche cc --session-name repo-claude-review --print --help`
+  Run native Claude Code inside tmux with passthrough CLI args and an optional session name override.
 - `orche send --session repo-codex-main "review the recent auth changes"`
   Send a task into an existing session and return immediately.
 - `orche status --session repo-codex-main`
