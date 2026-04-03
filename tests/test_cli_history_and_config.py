@@ -151,8 +151,11 @@ def test_build_status_uses_session_metadata_discord_session(xdg_runtime):
             "cwd": "/repo/demo",
             "agent": "codex",
             "pane_id": "%1",
-            "discord_channel_id": "1111111111",
-            "discord_session": "agent:main:discord:channel:1111111111",
+            "notify_binding": {
+                "provider": "discord",
+                "target": "1111111111",
+                "session": "agent:main:discord:channel:1111111111",
+            },
         },
     )
     backend.save_config(
@@ -197,7 +200,7 @@ def test_session_new_expands_cwd_user_home(xdg_runtime, monkeypatch):
     assert captured["agent"] == "codex"
 
 
-def test_session_new_passes_notify_targets(xdg_runtime, monkeypatch):
+def test_session_new_passes_notify_binding(xdg_runtime, monkeypatch):
     runner = CliRunner()
     project_dir = xdg_runtime["home"] / "project"
     project_dir.mkdir()
@@ -221,16 +224,38 @@ def test_session_new_passes_notify_targets(xdg_runtime, monkeypatch):
             "~/project",
             "--agent",
             "codex",
-            "--discord-channel-id",
-            "1234567890",
-            "--tmux-bridge-target",
+            "--notify-to",
+            "tmux-bridge",
+            "--notify-target",
             "target-session",
         ],
     )
 
     assert result.exit_code == 0
-    assert captured["kwargs"]["discord_channel_id"] == "1234567890"
-    assert captured["kwargs"]["tmux_bridge_target"] == "target-session"
+    assert captured["kwargs"]["notify_to"] == "tmux-bridge"
+    assert captured["kwargs"]["notify_target"] == "target-session"
+
+
+def test_session_new_rejects_partial_notify_binding(xdg_runtime):
+    runner = CliRunner()
+    project_dir = xdg_runtime["home"] / "project"
+    project_dir.mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "session-new",
+            "--cwd",
+            "~/project",
+            "--agent",
+            "codex",
+            "--notify-to",
+            "discord",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--notify-to and --notify-target must be provided together" in result.stdout
 
 
 def test_unknown_command_shows_clean_error(xdg_runtime, capsys, monkeypatch):

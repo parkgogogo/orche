@@ -110,8 +110,8 @@ class E2EContext:
         self,
         suffix: str,
         *,
-        discord_channel_id: str = "",
-        tmux_bridge_target: str = "",
+        notify_to: str = "",
+        notify_target: str = "",
     ) -> str:
         session = f"orche-e2e-{suffix}-{uuid.uuid4().hex[:8]}"
         args = [
@@ -123,10 +123,8 @@ class E2EContext:
             "--name",
             session,
         ]
-        if discord_channel_id:
-            args.extend(["--discord-channel-id", discord_channel_id])
-        if tmux_bridge_target:
-            args.extend(["--tmux-bridge-target", tmux_bridge_target])
+        if notify_to:
+            args.extend(["--notify-to", notify_to, "--notify-target", notify_target])
         result = self.run(args, timeout=E2E_TIMEOUT)
         _assert_ok(result)
         self.sessions.append(session)
@@ -186,12 +184,12 @@ def _write_config(env: Dict[str, str], payload: Dict[str, Any]) -> None:
 
 def test_e2e_session_a_notifies_session_b_via_tmux_bridge(e2e_context: E2EContext):
     session_b = e2e_context.create_session("target-b")
-    session_a = e2e_context.create_session("source-a", tmux_bridge_target=session_b)
+    session_a = e2e_context.create_session("source-a", notify_to="tmux-bridge", notify_target=session_b)
     _write_config(
         e2e_context.env,
         {
             "notify_enabled": True,
-            "notify_targets": ["tmux-bridge"],
+            "notify_provider": "discord",
         },
     )
 
@@ -210,13 +208,13 @@ def test_e2e_session_a_notifies_session_b_via_tmux_bridge(e2e_context: E2EContex
 
 def test_e2e_concurrent_tmux_bridge_notifications_serialize_same_target(e2e_context: E2EContext):
     target_b = e2e_context.create_session("target-b")
-    source_a = e2e_context.create_session("source-a", tmux_bridge_target=target_b)
-    source_c = e2e_context.create_session("source-c", tmux_bridge_target=target_b)
+    source_a = e2e_context.create_session("source-a", notify_to="tmux-bridge", notify_target=target_b)
+    source_c = e2e_context.create_session("source-c", notify_to="tmux-bridge", notify_target=target_b)
     _write_config(
         e2e_context.env,
         {
             "notify_enabled": True,
-            "notify_targets": ["tmux-bridge"],
+            "notify_provider": "discord",
         },
     )
 
@@ -252,19 +250,18 @@ def test_e2e_concurrent_tmux_bridge_notifications_serialize_same_target(e2e_cont
 
 
 def test_e2e_route_priority_prefers_explicit_then_session_then_global(e2e_context: E2EContext, webhook_server: _CaptureServer):
-    session_b = e2e_context.create_session("target-b")
-    session_global = e2e_context.create_session("source-global", tmux_bridge_target=session_b)
+    session_global = e2e_context.create_session("source-global")
     session_a = e2e_context.create_session(
         "source-session",
-        discord_channel_id="2222222222",
-        tmux_bridge_target=session_b,
+        notify_to="discord",
+        notify_target="2222222222",
     )
     webhook_url = f"http://127.0.0.1:{webhook_server.server_port}/discord"
     _write_config(
         e2e_context.env,
         {
             "notify_enabled": True,
-            "notify_targets": ["discord", "tmux-bridge"],
+            "notify_provider": "discord",
             "discord_webhook_url": webhook_url,
             "discord_channel_id": "1111111111",
             "notify_mention_user_id": "",
@@ -287,47 +284,41 @@ def test_e2e_route_priority_prefers_explicit_then_session_then_global(e2e_contex
     _assert_ok(explicit_notify)
     assert "discord: 3333333333" in explicit_notify.stdout
 
-    output = _wait_for_output(
-        e2e_context.env,
-        session_b,
-        "E2E-PRIORITY-GLOBAL",
-        "E2E-PRIORITY-SESSION",
-        "E2E-PRIORITY-EXPLICIT",
-    )
-    assert "orche notify" in output
-    assert len(webhook_server.requests) >= 3
+    assert len(webhook_server.requests) == 3
+    assert "E2E-PRIORITY-GLOBAL" in json.loads(webhook_server.requests[0]["body"])["content"]
+    assert "E2E-PRIORITY-SESSION" in json.loads(webhook_server.requests[1]["body"])["content"]
+    assert "E2E-PRIORITY-EXPLICIT" in json.loads(webhook_server.requests[2]["body"])["content"]
 
 
-def test_e2e_dual_channel_notifies_discord_and_tmux_bridge(e2e_context: E2EContext, webhook_server: _CaptureServer):
+def test_e2e_session_binding_overrides_global_provider_without_fanout(e2e_context: E2EContext, webhook_server: _CaptureServer):
     session_b = e2e_context.create_session("target-b")
     session_a = e2e_context.create_session(
         "source-a",
-        discord_channel_id="4444444444",
-        tmux_bridge_target=session_b,
+        notify_to="tmux-bridge",
+        notify_target=session_b,
     )
     webhook_url = f"http://127.0.0.1:{webhook_server.server_port}/discord"
     _write_config(
         e2e_context.env,
         {
             "notify_enabled": True,
-            "notify_targets": ["discord", "tmux-bridge"],
+            "notify_provider": "discord",
+            "discord_channel_id": "4444444444",
             "discord_webhook_url": webhook_url,
             "notify_mention_user_id": "",
         },
     )
 
-    result = e2e_context.notify(session_a, "E2E-DUAL-CHANNEL")
+    result = e2e_context.notify(session_a, "E2E-SINGLE-CHANNEL")
     _assert_ok(result)
 
     output = _wait_for_output(
         e2e_context.env,
         session_b,
         f"source session: {session_a}",
-        "E2E-DUAL-CHANNEL",
+        "E2E-SINGLE-CHANNEL",
     )
-    assert "notify ok: provider=discord detail=200" in result.stdout
     assert "notify ok: provider=tmux-bridge detail=delivered" in result.stdout
-    assert "E2E-DUAL-CHANNEL" in output
-    assert len(webhook_server.requests) == 1
-    request_body = json.loads(webhook_server.requests[0]["body"])
-    assert "E2E-DUAL-CHANNEL" in request_body["content"]
+    assert "provider=discord" not in result.stdout
+    assert "E2E-SINGLE-CHANNEL" in output
+    assert len(webhook_server.requests) == 0

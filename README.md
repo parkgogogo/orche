@@ -24,8 +24,8 @@ orche session-new \
   --cwd /path/to/repo \
   --agent codex \
   --name repo-codex-main \
-  --discord-channel-id 123456789012345678 \
-  --tmux-bridge-target repo-codex-reviewer
+  --notify-to tmux-bridge \
+  --notify-target repo-codex-reviewer
 ```
 
 Send work and return immediately:
@@ -77,7 +77,7 @@ pip install .
 
 ## Commands
 
-- `orche session-new --cwd /repo --agent codex --name repo-codex-main --discord-channel-id 123456789012345678 --tmux-bridge-target repo-codex-reviewer`
+- `orche session-new --cwd /repo --agent codex --name repo-codex-main --notify-to tmux-bridge --notify-target repo-codex-reviewer`
   Create or reuse a persistent Codex tmux session.
 - `orche send --session repo-codex-main "review the recent auth changes"`
   Send a task into an existing session and return immediately.
@@ -148,11 +148,11 @@ orche session-new \
   --cwd /repo \
   --agent codex \
   --name repo-codex-main \
-  --discord-channel-id 123456789012345678 \
-  --tmux-bridge-target repo-codex-reviewer
+  --notify-to discord \
+  --notify-target 123456789012345678
 ```
 
-Notify targets are treated as session creation-time bindings. To change them, close the session and create a new one with the desired arguments.
+Notify uses a single bound channel per session. To change it, close the session and create a new one with the desired `--notify-to` and `--notify-target`.
 
 Config file:
 

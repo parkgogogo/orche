@@ -121,7 +121,11 @@ def test_ensure_session_reuses_managed_codex_home_with_normalized_path(xdg_runti
             "pane_id": "%1",
             "codex_home": str(managed_home),
             "codex_home_managed": True,
-            "discord_channel_id": "123",
+            "notify_binding": {
+                "provider": "discord",
+                "target": "123",
+                "session": "agent:main:discord:channel:123",
+            },
         },
     )
 
@@ -147,7 +151,13 @@ def test_ensure_session_stores_absolute_cwd_in_metadata(xdg_runtime, tmp_path, m
     original_cwd = Path.cwd()
     try:
         os.chdir(tmp_path)
-        backend.ensure_session("absolute-cwd-session", relative_cwd, "codex", discord_channel_id="123")
+        backend.ensure_session(
+            "absolute-cwd-session",
+            relative_cwd,
+            "codex",
+            notify_to="discord",
+            notify_target="123",
+        )
     finally:
         os.chdir(original_cwd)
 
@@ -268,7 +278,7 @@ def test_ensure_session_rejects_rebinding_session_to_different_cwd(xdg_runtime, 
         raise AssertionError("expected OrcheError for cwd mismatch")
 
 
-def test_ensure_session_rejects_rebinding_discord_channel(xdg_runtime, tmp_path, monkeypatch):
+def test_ensure_session_rejects_rebinding_notify_binding(xdg_runtime, tmp_path, monkeypatch):
     source_home = tmp_path / "source-codex"
     source_home.mkdir()
     (source_home / "hooks").mkdir()
@@ -279,10 +289,10 @@ def test_ensure_session_rejects_rebinding_discord_channel(xdg_runtime, tmp_path,
     monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%1")
     monkeypatch.setattr(backend, "ensure_codex_running", lambda *args, **kwargs: "%1")
 
-    backend.ensure_session("notify-bound", tmp_path, "codex", discord_channel_id="123")
+    backend.ensure_session("notify-bound", tmp_path, "codex", notify_to="discord", notify_target="123")
 
-    with pytest.raises(backend.OrcheError, match="already bound to discord_channel_id=123"):
-        backend.ensure_session("notify-bound", tmp_path, "codex", discord_channel_id="456")
+    with pytest.raises(backend.OrcheError, match="already bound to notify_to=discord notify_target=123"):
+        backend.ensure_session("notify-bound", tmp_path, "codex", notify_to="discord", notify_target="456")
 
 
 def test_ensure_session_rejects_adding_tmux_target_after_creation(xdg_runtime, tmp_path, monkeypatch):
@@ -298,11 +308,11 @@ def test_ensure_session_rejects_adding_tmux_target_after_creation(xdg_runtime, t
 
     backend.ensure_session("notify-bound", tmp_path, "codex")
 
-    with pytest.raises(backend.OrcheError, match="created without a tmux-bridge notify target"):
-        backend.ensure_session("notify-bound", tmp_path, "codex", tmux_bridge_target="target-session")
+    with pytest.raises(backend.OrcheError, match="created without a notify target"):
+        backend.ensure_session("notify-bound", tmp_path, "codex", notify_to="tmux-bridge", notify_target="target-session")
 
 
-def test_ensure_session_stores_tmux_bridge_target_in_notify_routes(xdg_runtime, tmp_path, monkeypatch):
+def test_ensure_session_stores_tmux_bridge_notify_binding(xdg_runtime, tmp_path, monkeypatch):
     source_home = tmp_path / "source-codex"
     source_home.mkdir()
     (source_home / "hooks").mkdir()
@@ -313,10 +323,19 @@ def test_ensure_session_stores_tmux_bridge_target_in_notify_routes(xdg_runtime, 
     monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%1")
     monkeypatch.setattr(backend, "ensure_codex_running", lambda *args, **kwargs: "%1")
 
-    backend.ensure_session("notify-bound", tmp_path, "codex", tmux_bridge_target="target-session")
+    backend.ensure_session(
+        "notify-bound",
+        tmp_path,
+        "codex",
+        notify_to="tmux-bridge",
+        notify_target="target-session",
+    )
     meta = backend.load_meta("notify-bound")
 
-    assert meta["notify_routes"]["tmux-bridge"]["target_session"] == "target-session"
+    assert meta["notify_binding"] == {
+        "provider": "tmux-bridge",
+        "target": "target-session",
+    }
 
 
 def test_close_session_removes_managed_codex_home(xdg_runtime, tmp_path, monkeypatch):

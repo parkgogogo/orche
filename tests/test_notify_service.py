@@ -39,6 +39,12 @@ class BaseNotifier(Notifier):
         return super().send(event, route)
 
 
+class EmptyRegistry(NotifierRegistry):
+    def create_many_for(self, providers, config, *, http_client=None):
+        _ = (providers, config, http_client)
+        return []
+
+
 def test_notification_service_returns_success_and_failure_results():
     registry = NotifierRegistry()
     registry.register("alpha", lambda config, http_client: SuccessNotifier())
@@ -51,7 +57,7 @@ def test_notification_service_returns_success_and_failure_results():
             ResolvedRoute(provider="alpha", target="one"),
             ResolvedRoute(provider="beta", target="two"),
         ),
-        NotifyConfig(providers=("alpha", "beta")),
+        NotifyConfig(provider="alpha"),
     )
 
     assert list(results) == [
@@ -85,7 +91,7 @@ def test_dispatch_payload_builds_message_and_uses_service():
     event, routes, config = service.calls[0]
     assert event.session == "demo"
     assert routes[0].provider == "discord"
-    assert config.providers == ("discord",)
+    assert config.provider == "discord"
 
 
 def test_notification_service_returns_empty_when_no_notifiers():
@@ -94,7 +100,7 @@ def test_notification_service_returns_empty_when_no_notifiers():
     results = service.send(
         NotifyEvent(event="turn-complete", summary="done", session="demo", status="success"),
         (),
-        NotifyConfig(providers=()),
+        NotifyConfig(provider=""),
     )
 
     assert results == ()
@@ -108,7 +114,7 @@ def test_notification_service_marks_route_without_notifier_as_failure():
     results = service.send(
         NotifyEvent(event="turn-complete", summary="done", session="demo", status="success"),
         (ResolvedRoute(provider="beta", target="missing"),),
-        NotifyConfig(providers=("alpha",)),
+        NotifyConfig(provider="alpha"),
     )
 
     assert results == (
@@ -116,6 +122,25 @@ def test_notification_service_marks_route_without_notifier_as_failure():
             provider="beta",
             ok=False,
             detail="Unsupported notifier: beta. Supported notifiers: alpha",
+            target="missing",
+        ),
+    )
+
+
+def test_notification_service_marks_empty_factory_result_as_failure():
+    service = NotificationService(registry=EmptyRegistry())
+
+    results = service.send(
+        NotifyEvent(event="turn-complete", summary="done", session="demo", status="success"),
+        (ResolvedRoute(provider="alpha", target="missing"),),
+        NotifyConfig(provider="alpha"),
+    )
+
+    assert results == (
+        DeliveryResult(
+            provider="alpha",
+            ok=False,
+            detail="Unsupported notifier: alpha. Supported notifiers: ",
             target="missing",
         ),
     )
@@ -137,20 +162,20 @@ def test_resolve_routes_uses_explicit_channel_for_discord():
     routes = resolve_routes(
         event=event,
         runtime_config={"discord_channel_id": "123"},
-        notify_config=NotifyConfig(providers=("discord",)),
+        notify_config=NotifyConfig(provider="discord"),
         explicit_channel_id="456",
     )
 
     assert routes == (ResolvedRoute(provider="discord", target="456", session="demo"),)
 
 
-def test_resolve_routes_includes_non_discord_providers_without_target():
+def test_resolve_routes_uses_session_notify_binding_for_tmux_bridge():
     event = NotifyEvent(event="turn-complete", summary="done", session="demo", status="success")
 
     routes = resolve_routes(
         event=event,
-        runtime_config={"notify_routes": {"tmux-bridge": {"target_session": "target-session"}}},
-        notify_config=NotifyConfig(providers=("tmux-bridge",)),
+        runtime_config={"notify_binding": {"provider": "tmux-bridge", "target": "target-session"}},
+        notify_config=NotifyConfig(provider="discord"),
     )
 
     assert routes == (
@@ -158,7 +183,7 @@ def test_resolve_routes_includes_non_discord_providers_without_target():
             provider="tmux-bridge",
             target="target-session",
             session="demo",
-            metadata={"target_session": "target-session"},
+            metadata={},
         ),
     )
 
@@ -169,22 +194,106 @@ def test_resolve_routes_skips_discord_without_channel_target():
     routes = resolve_routes(
         event=event,
         runtime_config={},
-        notify_config=NotifyConfig(providers=("discord", "tmux-bridge")),
+        notify_config=NotifyConfig(provider="discord"),
     )
 
-    assert routes == (ResolvedRoute(provider="tmux-bridge", session="demo"),)
+    assert routes == ()
 
 
-def test_resolve_routes_prefers_notify_routes_discord_channel():
+def test_resolve_routes_prefers_session_binding_over_global_discord_target():
     event = NotifyEvent(event="turn-complete", summary="done", session="demo", status="success")
 
     routes = resolve_routes(
         event=event,
-        runtime_config={"notify_routes": {"discord": {"channel_id": "789"}}},
-        notify_config=NotifyConfig(providers=("discord",)),
+        runtime_config={
+            "notify_binding": {"provider": "discord", "target": "789"},
+            "discord_channel_id": "123",
+        },
+        notify_config=NotifyConfig(provider="discord"),
     )
 
     assert routes == (ResolvedRoute(provider="discord", target="789", session="demo"),)
+
+
+def test_resolve_routes_falls_back_to_global_target_when_binding_target_missing():
+    event = NotifyEvent(event="turn-complete", summary="done", session="demo", status="success")
+
+    routes = resolve_routes(
+        event=event,
+        runtime_config={
+            "notify_binding": {"provider": "discord", "target": ""},
+            "discord_channel_id": "123",
+        },
+        notify_config=NotifyConfig(provider="discord"),
+    )
+
+    assert routes == (ResolvedRoute(provider="discord", target="123", session="demo"),)
+
+
+def test_resolve_routes_ignores_empty_tmux_binding_and_falls_back_to_global_discord():
+    event = NotifyEvent(event="turn-complete", summary="done", session="demo", status="success")
+
+    routes = resolve_routes(
+        event=event,
+        runtime_config={
+            "notify_binding": {"provider": "tmux-bridge", "target": ""},
+            "discord_channel_id": "123",
+        },
+        notify_config=NotifyConfig(provider="discord"),
+    )
+
+    assert routes == (ResolvedRoute(provider="discord", target="123", session="demo"),)
+
+
+def test_resolve_routes_uses_global_tmux_provider_with_target():
+    event = NotifyEvent(event="turn-complete", summary="done", session="demo", status="success")
+
+    routes = resolve_routes(
+        event=event,
+        runtime_config={
+            "notify_provider": "tmux-bridge",
+            "notify_target_session": "target-session",
+        },
+        notify_config=NotifyConfig(provider="tmux-bridge"),
+    )
+
+    assert routes == (ResolvedRoute(provider="tmux-bridge", target="target-session", session="demo"),)
+
+
+def test_resolve_routes_skips_global_tmux_provider_without_target():
+    event = NotifyEvent(event="turn-complete", summary="done", session="demo", status="success")
+
+    routes = resolve_routes(
+        event=event,
+        runtime_config={"notify_provider": "tmux-bridge"},
+        notify_config=NotifyConfig(provider="tmux-bridge"),
+    )
+
+    assert routes == ()
+
+
+def test_resolve_routes_skips_tmux_provider_without_any_runtime_target():
+    event = NotifyEvent(event="turn-complete", summary="done", session="demo", status="success")
+
+    routes = resolve_routes(
+        event=event,
+        runtime_config={},
+        notify_config=NotifyConfig(provider="tmux-bridge"),
+    )
+
+    assert routes == ()
+
+
+def test_resolve_routes_returns_empty_when_provider_is_blank():
+    event = NotifyEvent(event="turn-complete", summary="done", session="demo", status="success")
+
+    routes = resolve_routes(
+        event=event,
+        runtime_config={},
+        notify_config=NotifyConfig(provider=""),
+    )
+
+    assert routes == ()
 
 
 def test_dispatch_payload_returns_empty_when_event_has_no_routes():

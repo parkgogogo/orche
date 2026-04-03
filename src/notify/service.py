@@ -5,6 +5,7 @@ import re
 from typing import Any, Callable, Mapping, Sequence
 
 from .config import load_notify_config
+from .exceptions import NotifyConfigError
 from .http import HTTPClient
 from .models import DeliveryResult, NotifyEvent, ResolvedRoute
 from .payload import build_message_from_payload
@@ -29,17 +30,26 @@ class NotificationService:
     ) -> Sequence[DeliveryResult]:
         if not routes:
             return ()
-        notifiers = {
-            notifier.name: notifier
-            for notifier in self.registry.create_many(config, http_client=self.http_client)
-        }
+        requested_providers = tuple(dict.fromkeys(route.provider for route in routes if route.provider))
+        notifiers = {}
+        for provider in requested_providers:
+            try:
+                created = self.registry.create_many_for(
+                    (provider,),
+                    config,
+                    http_client=self.http_client,
+                )
+            except NotifyConfigError:
+                continue
+            if created:
+                notifiers[provider] = created[0]
         results: list[DeliveryResult] = []
         with ThreadPoolExecutor(max_workers=max(1, len(routes))) as executor:
             future_map = {}
             for route in routes:
                 notifier = notifiers.get(route.provider)
                 if notifier is None:
-                    supported = ", ".join(sorted(notifiers))
+                    supported = ", ".join(sorted(notifiers)) or ", ".join(self.registry.names())
                     results.append(
                         DeliveryResult(
                             provider=route.provider,
@@ -74,48 +84,71 @@ def resolve_routes(
     notify_config,
     explicit_channel_id: str = "",
 ) -> Sequence[ResolvedRoute]:
-    routes: list[ResolvedRoute] = []
-    configured_routes = runtime_config.get("notify_routes")
-    provider_routes = configured_routes if isinstance(configured_routes, Mapping) else {}
-    discord_route = provider_routes.get("discord") if isinstance(provider_routes.get("discord"), Mapping) else {}
-    normalized_channel_id = re.sub(
-        r"\s+",
-        "",
-        str(
-            explicit_channel_id
-            or discord_route.get("channel_id")
-            or runtime_config.get("discord_channel_id")
-            or runtime_config.get("codex_turn_complete_channel_id")
-            or ""
-        ),
-    )
-    for provider in notify_config.providers:
-        if provider == "discord" and normalized_channel_id:
-            routes.append(
-                ResolvedRoute(
-                    provider=provider,
-                    target=normalized_channel_id,
-                    session=event.session,
-                )
+    normalized_channel_id = re.sub(r"\s+", "", str(explicit_channel_id or ""))
+    if normalized_channel_id:
+        return (ResolvedRoute(provider="discord", target=normalized_channel_id, session=event.session),)
+
+    raw_binding = runtime_config.get("notify_binding")
+    binding = raw_binding if isinstance(raw_binding, Mapping) else {}
+    binding_provider = str(binding.get("provider") or "").strip()
+    binding_target = str(binding.get("target") or "").strip()
+    if binding_provider:
+        if binding_provider == "discord":
+            binding_target = re.sub(
+                r"\s+",
+                "",
+                binding_target
+                or str(
+                    runtime_config.get("discord_channel_id")
+                    or runtime_config.get("codex_turn_complete_channel_id")
+                    or ""
+                ),
             )
-        elif provider != "discord":
-            provider_route = provider_routes.get(provider)
-            route_payload = provider_route if isinstance(provider_route, Mapping) else {}
-            target = str(
-                route_payload.get("target")
-                or route_payload.get("target_session")
-                or route_payload.get("session")
+        if binding_target:
+            metadata = {
+                key: value
+                for key, value in dict(binding).items()
+                if key not in {"provider", "target", "session"} and str(value).strip()
+            }
+            return (
+                ResolvedRoute(
+                    provider=binding_provider,
+                    target=binding_target,
+                    session=event.session,
+                    metadata=metadata,
+                ),
+            )
+
+    provider = str(notify_config.provider or "").strip()
+    if provider == "discord":
+        global_channel_id = re.sub(
+            r"\s+",
+            "",
+            str(
+                runtime_config.get("discord_channel_id")
+                or runtime_config.get("codex_turn_complete_channel_id")
                 or ""
-            ).strip()
-            routes.append(
+            ),
+        )
+        if global_channel_id:
+            return (ResolvedRoute(provider="discord", target=global_channel_id, session=event.session),)
+        return ()
+
+    if provider:
+        target = str(
+            runtime_config.get("notify_target")
+            or runtime_config.get("notify_target_session")
+            or ""
+        ).strip()
+        if target:
+            return (
                 ResolvedRoute(
                     provider=provider,
                     target=target,
                     session=event.session,
-                    metadata=dict(route_payload),
-                )
+                ),
             )
-    return tuple(routes)
+    return ()
 
 
 def dispatch_payload(

@@ -19,7 +19,7 @@ Use `orche` as the handoff boundary between OpenClaw and a long-running Codex se
 
 ```bash
 # Create or reuse a Codex session
-orche session-new --cwd /repo --agent codex --name repo-codex-main --discord-channel-id 123 --tmux-bridge-target repo-codex-reviewer
+orche session-new --cwd /repo --agent codex --name repo-codex-main --notify-to tmux-bridge --notify-target repo-codex-reviewer
 
 # Send work and return immediately
 orche send --session repo-codex-main "analyze this codebase"
@@ -51,7 +51,7 @@ orche config set discord.mention-user-id "123"
 orche config set notify.enabled true
 ```
 
-Set notify targets at session creation time with `session-new`. To change them later, close the session and create a new one.
+Set exactly one notify channel at session creation time with `session-new`. To change it later, close the session and create a new one.
 
 Config path:
 

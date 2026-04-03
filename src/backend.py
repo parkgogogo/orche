@@ -12,7 +12,7 @@ import time
 import traceback
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple, Union
 
 try:
     import tomllib
@@ -54,6 +54,7 @@ TOML_PROJECT_HEADER_RE = re.compile(r"^\s*\[projects\.(.+)\]\s*$")
 TOML_TRUST_LEVEL_RE = re.compile(r"^\s*trust_level\s*=")
 SOURCE_CONFIG_LOCK_NAME = "codex-source-config"
 SOURCE_CONFIG_BACKUP_SUFFIX = ".orche.bak"
+SUPPORTED_NOTIFY_PROVIDERS = ("discord", "tmux-bridge")
 CONFIG_KEY_MAP = {
     "discord.bot-token": "discord_bot_token",
     "discord.mention-user-id": "notify_mention_user_id",
@@ -596,35 +597,77 @@ def load_meta(session: str) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _normalize_notify_routes(routes: Any) -> Dict[str, Dict[str, str]]:
-    if not isinstance(routes, dict):
-        return {}
-    normalized: Dict[str, Dict[str, str]] = {}
-    for provider, payload in routes.items():
-        provider_name = str(provider).strip()
-        if not provider_name or not isinstance(payload, dict):
-            continue
-        route_payload = {
-            str(key).strip(): str(value).strip()
-            for key, value in payload.items()
-            if str(key).strip() and str(value).strip()
+def validate_notify_provider(value: str, *, option_name: str = "--notify-to") -> str:
+    provider = str(value or "").strip()
+    if not provider:
+        raise OrcheError(f"{option_name} is required")
+    if provider not in SUPPORTED_NOTIFY_PROVIDERS:
+        supported = ", ".join(SUPPORTED_NOTIFY_PROVIDERS)
+        raise OrcheError(f"{option_name} must be one of: {supported}")
+    return provider
+
+
+def _read_notify_binding(payload: Mapping[str, Any]) -> Dict[str, str]:
+    binding = payload.get("notify_binding")
+    if isinstance(binding, Mapping):
+        provider = str(binding.get("provider") or "").strip()
+        target = str(binding.get("target") or "").strip()
+        if provider == "discord" and target.isdigit():
+            return {
+                "provider": "discord",
+                "target": target,
+                "session": str(binding.get("session") or derive_discord_session(target)).strip(),
+            }
+        if provider == "tmux-bridge" and target:
+            return {
+                "provider": "tmux-bridge",
+                "target": target,
+            }
+    legacy_routes = payload.get("notify_routes")
+    if isinstance(legacy_routes, Mapping):
+        discord_route = legacy_routes.get("discord")
+        if isinstance(discord_route, Mapping):
+            target = str(discord_route.get("channel_id") or "").strip()
+            if target.isdigit():
+                return {
+                    "provider": "discord",
+                    "target": target,
+                    "session": str(discord_route.get("session") or derive_discord_session(target)).strip(),
+                }
+        tmux_route = legacy_routes.get("tmux-bridge")
+        if isinstance(tmux_route, Mapping):
+            target = str(tmux_route.get("target_session") or tmux_route.get("target") or "").strip()
+            if target:
+                return {
+                    "provider": "tmux-bridge",
+                    "target": target,
+                }
+    discord_channel_id = str(payload.get("discord_channel_id") or "").strip()
+    if discord_channel_id.isdigit():
+        return {
+            "provider": "discord",
+            "target": discord_channel_id,
+            "session": str(payload.get("discord_session") or derive_discord_session(discord_channel_id)).strip(),
         }
-        if route_payload:
-            normalized[provider_name] = route_payload
-    return normalized
+    return {}
 
 
-def list_notify_routes(session: str) -> Dict[str, Dict[str, str]]:
-    _cwd, _agent, meta = resolve_session_context(session=session, require_existing=True)
-    routes = _normalize_notify_routes(meta.get("notify_routes"))
-    discord_channel_id = str(meta.get("discord_channel_id") or "").strip()
-    discord_session = str(meta.get("discord_session") or "").strip()
-    if discord_channel_id:
-        route = dict(routes.get("discord") or {})
-        route["channel_id"] = validate_discord_channel_id(discord_channel_id)
-        route["session"] = discord_session or derive_discord_session(discord_channel_id)
-        routes["discord"] = route
-    return routes
+def build_notify_binding(provider: str, target: str) -> Dict[str, str]:
+    normalized_provider = validate_notify_provider(provider)
+    normalized_target = str(target or "").strip()
+    if normalized_provider == "discord":
+        channel_id = validate_discord_channel_id(normalized_target, option_name="--notify-target")
+        return {
+            "provider": "discord",
+            "target": channel_id,
+            "session": derive_discord_session(channel_id),
+        }
+    if not normalized_target:
+        raise OrcheError("--notify-target is required for --notify-to tmux-bridge")
+    return {
+        "provider": "tmux-bridge",
+        "target": normalized_target,
+    }
 
 
 def remove_meta(session: str) -> None:
@@ -685,6 +728,7 @@ def load_config() -> Dict[str, Any]:
         "discord_channel_id": "",
         "discord_webhook_url": "",
         "notify_enabled": True,
+        "notify_provider": "discord",
         "session": "",
         "discord_session": "",
         "codex_home": "",
@@ -710,10 +754,10 @@ def save_config(config: Dict[str, Any]) -> None:
     write_text_atomically(config_path(), payload)
 
 
-def validate_discord_channel_id(value: str) -> str:
+def validate_discord_channel_id(value: str, *, option_name: str = "--channel-id") -> str:
     channel_id = re.sub(r"\s+", "", value or "")
     if not channel_id or not channel_id.isdigit():
-        raise OrcheError("--discord-channel-id must be a numeric Discord channel ID")
+        raise OrcheError(f"{option_name} must be a numeric Discord channel ID")
     return channel_id
 
 
@@ -769,8 +813,6 @@ def update_runtime_config(
     pane_id: str,
     codex_home: Optional[str] = None,
     codex_home_managed: Optional[bool] = None,
-    discord_channel_id: Optional[str] = None,
-    discord_session: Optional[str] = None,
 ) -> Dict[str, Any]:
     config = load_config()
     config["_comment"] = CONFIG_COMMENT
@@ -1121,9 +1163,8 @@ def ensure_session(
     *,
     approve_all: bool = False,
     codex_home: Optional[str] = None,
-    discord_channel_id: Optional[str] = None,
-    discord_session: Optional[str] = None,
-    tmux_bridge_target: Optional[str] = None,
+    notify_to: Optional[str] = None,
+    notify_target: Optional[str] = None,
 ) -> str:
     cwd = cwd.resolve()
     existing_meta = load_meta(session)
@@ -1133,50 +1174,33 @@ def ensure_session(
             f"Session {session} is already bound to cwd={existing_cwd}. "
             "Use the same --cwd or close the session and create a new one."
         )
-    existing_notify_routes = _normalize_notify_routes(existing_meta.get("notify_routes"))
-    existing_discord_channel_id = str(existing_meta.get("discord_channel_id") or "").strip()
-    provided_discord_channel_id = str(discord_channel_id or "").strip()
-    if existing_meta and provided_discord_channel_id != existing_discord_channel_id and provided_discord_channel_id:
-        if existing_discord_channel_id:
-            raise OrcheError(
-                f"Session {session} is already bound to discord_channel_id={existing_discord_channel_id}. "
-                "Use the same --discord-channel-id or close the session and create a new one."
-            )
-        raise OrcheError(
-            f"Session {session} was created without a discord notify target. "
-            "Close the session and create a new one to add --discord-channel-id."
-        )
-    resolved_discord_channel_id = existing_discord_channel_id or provided_discord_channel_id
-    resolved_discord_session = (
-        discord_session
-        or str(existing_meta.get("discord_session") or "")
-        or (derive_discord_session(resolved_discord_channel_id) if resolved_discord_channel_id else "")
+    provided_notify_to = str(notify_to or "").strip()
+    provided_notify_target = str(notify_target or "").strip()
+    if bool(provided_notify_to) != bool(provided_notify_target):
+        raise OrcheError("--notify-to and --notify-target must be provided together")
+    existing_notify_binding = _read_notify_binding(existing_meta)
+    provided_notify_binding = (
+        build_notify_binding(provided_notify_to, provided_notify_target)
+        if provided_notify_to
+        else {}
     )
-    existing_tmux_bridge_target = str(
-        (existing_notify_routes.get("tmux-bridge") or {}).get("target_session") or ""
-    ).strip()
-    provided_tmux_bridge_target = str(tmux_bridge_target or "").strip()
-    if existing_meta and provided_tmux_bridge_target != existing_tmux_bridge_target and provided_tmux_bridge_target:
-        if existing_tmux_bridge_target:
+    if existing_meta and provided_notify_binding != existing_notify_binding and provided_notify_binding:
+        if existing_notify_binding:
             raise OrcheError(
-                f"Session {session} is already bound to tmux_bridge_target={existing_tmux_bridge_target}. "
-                "Use the same --tmux-bridge-target or close the session and create a new one."
+                f"Session {session} is already bound to notify_to={existing_notify_binding['provider']} "
+                f"notify_target={existing_notify_binding['target']}. "
+                "Use the same notify binding or close the session and create a new one."
             )
         raise OrcheError(
-            f"Session {session} was created without a tmux-bridge notify target. "
-            "Close the session and create a new one to add --tmux-bridge-target."
+            f"Session {session} was created without a notify target. "
+            "Close the session and create a new one to add --notify-to/--notify-target."
         )
-    resolved_tmux_bridge_target = existing_tmux_bridge_target or provided_tmux_bridge_target
-    notify_routes = dict(existing_notify_routes)
-    if resolved_discord_channel_id:
-        notify_routes["discord"] = {
-            "channel_id": resolved_discord_channel_id,
-            "session": resolved_discord_session,
-        }
-    if resolved_tmux_bridge_target:
-        notify_routes["tmux-bridge"] = {
-            "target_session": resolved_tmux_bridge_target,
-        }
+    resolved_notify_binding = existing_notify_binding or provided_notify_binding
+    resolved_discord_channel_id = (
+        resolved_notify_binding.get("target")
+        if resolved_notify_binding.get("provider") == "discord"
+        else ""
+    )
     managed_codex_home = False
     if codex_home:
         resolved_codex_home = normalize_codex_home(codex_home)
@@ -1225,12 +1249,16 @@ def ensure_session(
             "pane_id": pane_id,
             "codex_home": resolved_codex_home,
             "codex_home_managed": managed_codex_home,
-            "discord_channel_id": resolved_discord_channel_id,
-            "discord_session": resolved_discord_session,
-            "notify_routes": notify_routes,
             "last_seen_at": time.time(),
         }
     )
+    meta.pop("discord_channel_id", None)
+    meta.pop("discord_session", None)
+    meta.pop("notify_routes", None)
+    if resolved_notify_binding:
+        meta["notify_binding"] = resolved_notify_binding
+    else:
+        meta.pop("notify_binding", None)
     save_meta(session, meta)
     update_runtime_config(
         session=session,
@@ -1239,8 +1267,6 @@ def ensure_session(
         pane_id=pane_id,
         codex_home=resolved_codex_home,
         codex_home_managed=managed_codex_home,
-        discord_channel_id=resolved_discord_channel_id,
-        discord_session=resolved_discord_session,
     )
     return pane_id
 
@@ -1252,16 +1278,12 @@ def send_prompt(
     prompt: str,
     *,
     approve_all: bool = False,
-    discord_channel_id: Optional[str] = None,
-    discord_session: Optional[str] = None,
 ) -> str:
     pane_id = ensure_session(
         session,
         cwd,
         agent,
         approve_all=approve_all,
-        discord_channel_id=discord_channel_id,
-        discord_session=discord_session,
     )
     before_capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES)
     meta = load_meta(session)
@@ -1310,11 +1332,8 @@ def build_status(session: str) -> Dict[str, Any]:
     info = get_pane_info(pane_id) if pane_id else None
     cwd = str(meta.get("cwd") or (info or {}).get("pane_current_path") or "-")
     agent = str(meta.get("agent") or "codex")
-    discord_session = str(meta.get("discord_session") or "")
-    discord_channel_id = str(meta.get("discord_channel_id") or "").strip()
-    if not discord_session and discord_channel_id.isdigit():
-        discord_session = derive_discord_session(discord_channel_id)
-    notify_routes = list_notify_routes(session) if meta else {}
+    notify_binding = _read_notify_binding(meta) if meta else {}
+    discord_session = notify_binding.get("session", "") if notify_binding.get("provider") == "discord" else ""
     return {
         "backend": BACKEND,
         "session": session,
@@ -1327,7 +1346,7 @@ def build_status(session: str) -> Dict[str, Any]:
         "codex_running": bool(pane_id and is_codex_running(pane_id)),
         "pane_exists": bool(pane_id and pane_exists(pane_id)),
         "discord_session": discord_session,
-        "notify_routes": notify_routes,
+        "notify_binding": notify_binding,
     }
 
 

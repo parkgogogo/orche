@@ -87,7 +87,7 @@ def _print_notify_verbose(
 ) -> None:
     console.print("notify config:")
     console.print(f"  enabled: {_bool_label(notify_config.enabled)}")
-    console.print(f"  providers: {', '.join(notify_config.providers) or '-'}")
+    console.print(f"  provider: {notify_config.provider or '-'}")
     console.print(f"  discord.bot_token: {_configured_label(notify_config.discord.bot_token)}")
     console.print(f"  discord.webhook_url: {_configured_label(notify_config.discord.webhook_url)}")
     console.print(
@@ -99,9 +99,9 @@ def _print_notify_verbose(
         f"{channel_id or runtime_config.get('discord_channel_id') or '-'}"
     )
     console.print(f"  runtime.session: {session or runtime_config.get('session') or '-'}")
-    notify_routes = runtime_config.get("notify_routes")
-    if isinstance(notify_routes, dict):
-        console.print(f"  runtime.notify_routes: {json.dumps(notify_routes, ensure_ascii=False)}")
+    notify_binding = runtime_config.get("notify_binding")
+    if isinstance(notify_binding, dict):
+        console.print(f"  runtime.notify_binding: {json.dumps(notify_binding, ensure_ascii=False)}")
     console.print(f"  payload_bytes: {len(payload_text.encode('utf-8'))}")
     parsed_payload = parse_payload(payload_text)
     if parsed_payload is None:
@@ -148,15 +148,37 @@ def _notify_runtime_config(runtime_config: dict, session: str) -> dict:
         "pane_id",
         "codex_home",
         "codex_home_managed",
-        "discord_channel_id",
-        "discord_session",
-        "notify_routes",
+        "notify_binding",
     ):
         value = meta.get(key)
         if value not in (None, ""):
             merged[key] = value
-    if merged.get("discord_channel_id") and not merged.get("codex_turn_complete_channel_id"):
-        merged["codex_turn_complete_channel_id"] = merged["discord_channel_id"]
+    if not merged.get("notify_binding"):
+        legacy_discord_channel = str(meta.get("discord_channel_id") or "").strip()
+        if legacy_discord_channel:
+            merged["notify_binding"] = {
+                "provider": "discord",
+                "target": legacy_discord_channel,
+                "session": str(meta.get("discord_session") or ""),
+            }
+        else:
+            legacy_routes = meta.get("notify_routes")
+            if isinstance(legacy_routes, dict):
+                tmux_route = legacy_routes.get("tmux-bridge")
+                if isinstance(tmux_route, dict):
+                    target = str(tmux_route.get("target_session") or tmux_route.get("target") or "").strip()
+                    if target:
+                        merged["notify_binding"] = {
+                            "provider": "tmux-bridge",
+                            "target": target,
+                        }
+    notify_binding = merged.get("notify_binding")
+    if isinstance(notify_binding, dict) and str(notify_binding.get("provider") or "").strip() == "discord":
+        target = str(notify_binding.get("target") or "").strip()
+        if target:
+            merged["discord_channel_id"] = target
+            merged["codex_turn_complete_channel_id"] = target
+            merged["discord_session"] = str(notify_binding.get("session") or merged.get("discord_session") or "")
     return merged
 
 
@@ -242,10 +264,10 @@ def _render_status(info: dict) -> None:
     if info.get("discord_session"):
         body.append("\nDiscord session: ", style="bold cyan")
         body.append(str(info["discord_session"]))
-    notify_routes = info.get("notify_routes")
-    if isinstance(notify_routes, dict) and notify_routes:
-        body.append("\nNotify bindings: ", style="bold cyan")
-        body.append(json.dumps(notify_routes, ensure_ascii=False))
+    notify_binding = info.get("notify_binding")
+    if isinstance(notify_binding, dict) and notify_binding:
+        body.append("\nNotify binding: ", style="bold cyan")
+        body.append(json.dumps(notify_binding, ensure_ascii=False))
     console.print(Panel.fit(body, title="orche status", border_style="blue"))
 
 
@@ -309,8 +331,8 @@ def session_new(
     agent: str = typer.Option(..., help="Agent name. Currently only 'codex' is supported."),
     name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-<agent>-main."),
     codex_home: Optional[Path] = typer.Option(None, "--codex-home", callback=_resolve_optional_path, resolve_path=False, help="Optional manual CODEX_HOME override. If omitted, orche manages /tmp/orche-codex-<session> automatically."),
-    discord_channel_id: Optional[str] = typer.Option(None, "--discord-channel-id", help="Numeric Discord channel ID to send completion notifications back to."),
-    tmux_bridge_target: Optional[str] = typer.Option(None, "--tmux-bridge-target", help="Target session name for tmux-bridge notify delivery."),
+    notify_to: Optional[str] = typer.Option(None, "--notify-to", help="Single notify provider to bind to this session."),
+    notify_target: Optional[str] = typer.Option(None, "--notify-target", help="Provider-specific notify target value."),
 ) -> None:
     try:
         if agent != "codex":
@@ -321,8 +343,8 @@ def session_new(
             cwd.resolve(),
             agent,
             codex_home=None if codex_home is None else str(codex_home),
-            discord_channel_id=discord_channel_id,
-            tmux_bridge_target=tmux_bridge_target,
+            notify_to=notify_to,
+            notify_target=notify_target,
         )
         append_action_history(session, cwd.resolve(), agent, "session-new", pane_id=pane_id)
         console.print(session)

@@ -121,8 +121,11 @@ def test_notify_hidden_command_prefers_session_meta_channel_over_global_config(x
             "cwd": "/tmp/repo",
             "agent": "codex",
             "pane_id": "%1",
-            "discord_channel_id": "1111111111",
-            "discord_session": "agent:main:discord:channel:1111111111",
+            "notify_binding": {
+                "provider": "discord",
+                "target": "1111111111",
+                "session": "agent:main:discord:channel:1111111111",
+            },
         },
     )
 
@@ -136,13 +139,12 @@ def test_notify_hidden_command_prefers_session_meta_channel_over_global_config(x
     assert fake_client.requests[0]["url"].endswith("/channels/1111111111/messages")
 
 
-def test_notify_hidden_command_uses_session_notify_routes_for_tmux_bridge(xdg_runtime, monkeypatch):
+def test_notify_hidden_command_uses_session_notify_binding_for_tmux_bridge(xdg_runtime, monkeypatch):
     captured = []
     write_runtime_config(
         xdg_runtime["config_path"],
         {
             "notify_enabled": True,
-            "notify_targets": ["tmux-bridge"],
             "session": "other-session",
             "cwd": "/tmp/other",
         },
@@ -157,10 +159,9 @@ def test_notify_hidden_command_uses_session_notify_routes_for_tmux_bridge(xdg_ru
             "cwd": "/tmp/repo",
             "agent": "codex",
             "pane_id": "%1",
-            "notify_routes": {
-                "tmux-bridge": {
-                    "target_session": "target-session",
-                }
+            "notify_binding": {
+                "provider": "tmux-bridge",
+                "target": "target-session",
             },
         },
     )

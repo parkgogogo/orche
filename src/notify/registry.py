@@ -28,8 +28,17 @@ class NotifierRegistry:
         *,
         http_client: HTTPClient | None = None,
     ) -> List[Notifier]:
+        return self.create_many_for(config.providers, config, http_client=http_client)
+
+    def create_many_for(
+        self,
+        providers: Iterable[str],
+        config: NotifyConfig,
+        *,
+        http_client: HTTPClient | None = None,
+    ) -> List[Notifier]:
         notifiers: List[Notifier] = []
-        for provider in config.providers:
+        for provider in providers:
             factory = self._factories.get(provider)
             if factory is None:
                 supported = ", ".join(self.names())
