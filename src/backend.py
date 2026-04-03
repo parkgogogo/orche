@@ -442,6 +442,10 @@ def lock_path(session: str) -> Path:
     return locks_dir() / f"{session_key(session)}.lock"
 
 
+def notify_target_lock_path(session: str) -> Path:
+    return locks_dir() / f"{session_key(session)}.notify.lock"
+
+
 def run(
     cmd: List[str],
     *,
@@ -851,9 +855,8 @@ def update_runtime_config(
 
 
 @contextlib.contextmanager
-def session_lock(session: str, *, timeout: float = 5.0):
+def _file_lock(path: Path, *, timeout: float, error_message: str):
     ensure_directories()
-    path = lock_path(session)
     deadline = time.time() + timeout
     while True:
         try:
@@ -861,7 +864,7 @@ def session_lock(session: str, *, timeout: float = 5.0):
             break
         except FileExistsError:
             if time.time() > deadline:
-                raise OrcheError(f"Timed out waiting for session lock: {session}")
+                raise OrcheError(error_message)
             time.sleep(0.1)
     try:
         os.write(fd, str(os.getpid()).encode())
@@ -872,6 +875,26 @@ def session_lock(session: str, *, timeout: float = 5.0):
             path.unlink()
         except FileNotFoundError:
             pass
+
+
+@contextlib.contextmanager
+def session_lock(session: str, *, timeout: float = 5.0):
+    with _file_lock(
+        lock_path(session),
+        timeout=timeout,
+        error_message=f"Timed out waiting for session lock: {session}",
+    ):
+        yield
+
+
+@contextlib.contextmanager
+def target_session_io_lock(session: str, *, timeout: float = 5.0):
+    with _file_lock(
+        notify_target_lock_path(session),
+        timeout=timeout,
+        error_message=f"Timed out waiting for notify target lock: {session}",
+    ):
+        yield
 
 
 def bridge_name_pane(pane_id: str, session: str) -> None:
@@ -904,6 +927,21 @@ def bridge_keys(session: str, keys: Union[Iterable[str], str]) -> None:
         return
     tmux_bridge("read", session, "1", check=True, capture=True)
     tmux_bridge("keys", session, *values, check=True, capture=True)
+
+
+def deliver_notify_to_session(session: str, prompt: str) -> str:
+    target_session = session.strip()
+    if not target_session:
+        raise OrcheError("notify target session is required")
+    if not prompt:
+        raise OrcheError("notify prompt is required")
+    with target_session_io_lock(target_session):
+        pane_id = bridge_resolve(target_session)
+        if not pane_id:
+            raise OrcheError(f"notify target session not found: {target_session}")
+        bridge_type(target_session, prompt)
+        bridge_keys(target_session, ["Enter"])
+        return pane_id
 
 
 def ensure_window(name: str, cwd: Path) -> Dict[str, str]:

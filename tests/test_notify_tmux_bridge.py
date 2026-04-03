@@ -8,12 +8,13 @@ from notify.models import NotifyEvent, ResolvedRoute
 from notify.tmux_bridge import TmuxBridgeNotifier
 
 
-def test_tmux_bridge_notifier_types_prompt_and_presses_enter(monkeypatch):
-    actions = []
+def test_tmux_bridge_notifier_delivers_prompt_through_backend_helper(monkeypatch):
+    captured = []
 
-    monkeypatch.setattr("notify.tmux_bridge.bridge_resolve", lambda session: "%42" if session == "target-session" else None)
-    monkeypatch.setattr("notify.tmux_bridge.bridge_type", lambda session, text: actions.append(("type", session, text)))
-    monkeypatch.setattr("notify.tmux_bridge.bridge_keys", lambda session, keys: actions.append(("keys", session, list(keys))))
+    monkeypatch.setattr(
+        "notify.tmux_bridge.deliver_notify_to_session",
+        lambda session, prompt: captured.append((session, prompt)) or "%42",
+    )
 
     notifier = TmuxBridgeNotifier(NotifyConfig())
 
@@ -30,22 +31,21 @@ def test_tmux_bridge_notifier_types_prompt_and_presses_enter(monkeypatch):
 
     assert result.ok is True
     assert result.target == "target-session"
-    assert actions == [
+    assert captured == [
         (
-            "type",
             "target-session",
             "orche notify\nsource session: source-session\nstatus: success\ncwd: /tmp/repo\n\nreview source session output",
-        ),
-        ("keys", "target-session", ["Enter"]),
+        )
     ]
 
 
 def test_tmux_bridge_notifier_uses_default_prefix_for_empty_summary(monkeypatch):
-    actions = []
+    captured = []
 
-    monkeypatch.setattr("notify.tmux_bridge.bridge_resolve", lambda session: "%42")
-    monkeypatch.setattr("notify.tmux_bridge.bridge_type", lambda session, text: actions.append(text))
-    monkeypatch.setattr("notify.tmux_bridge.bridge_keys", lambda session, keys: None)
+    monkeypatch.setattr(
+        "notify.tmux_bridge.deliver_notify_to_session",
+        lambda session, prompt: captured.append(prompt) or "%42",
+    )
 
     notifier = TmuxBridgeNotifier(NotifyConfig(default_message_prefix="Codex turn complete"))
 
@@ -54,7 +54,7 @@ def test_tmux_bridge_notifier_uses_default_prefix_for_empty_summary(monkeypatch)
         ResolvedRoute(provider="tmux-bridge", target="target-session"),
     )
 
-    assert actions == [
+    assert captured == [
         "orche notify\nsource session: -\nstatus: success\ncwd: -\n\nCodex turn complete"
     ]
 
@@ -69,25 +69,11 @@ def test_tmux_bridge_notifier_requires_target_session():
         )
 
 
-def test_tmux_bridge_notifier_requires_existing_target_session(monkeypatch):
-    monkeypatch.setattr("notify.tmux_bridge.bridge_resolve", lambda session: None)
-    notifier = TmuxBridgeNotifier(NotifyConfig())
-
-    with pytest.raises(NotifyDeliveryError):
-        notifier.send(
-            NotifyEvent(event="turn-complete", summary="done", session="source", status="success"),
-            ResolvedRoute(provider="tmux-bridge", target="missing-session"),
-        )
-
-
-def test_tmux_bridge_notifier_wraps_bridge_errors(monkeypatch):
-    monkeypatch.setattr("notify.tmux_bridge.bridge_resolve", lambda session: "%42")
-
-    def raise_error(session, text):
-        raise RuntimeError("broken bridge")
-
-    monkeypatch.setattr("notify.tmux_bridge.bridge_type", raise_error)
-    monkeypatch.setattr("notify.tmux_bridge.bridge_keys", lambda session, keys: None)
+def test_tmux_bridge_notifier_wraps_backend_errors(monkeypatch):
+    monkeypatch.setattr(
+        "notify.tmux_bridge.deliver_notify_to_session",
+        lambda session, prompt: (_ for _ in ()).throw(RuntimeError("broken bridge")),
+    )
     notifier = TmuxBridgeNotifier(NotifyConfig())
 
     with pytest.raises(NotifyDeliveryError, match="tmux-bridge delivery failed: broken bridge"):

@@ -166,16 +166,8 @@ def test_notify_hidden_command_uses_session_notify_routes_for_tmux_bridge(xdg_ru
     )
 
     monkeypatch.setattr(
-        "notify.tmux_bridge.bridge_resolve",
-        lambda session: "%2" if session == "target-session" else None,
-    )
-    monkeypatch.setattr(
-        "notify.tmux_bridge.bridge_type",
-        lambda session, text: captured.append(("type", session, text)),
-    )
-    monkeypatch.setattr(
-        "notify.tmux_bridge.bridge_keys",
-        lambda session, keys: captured.append(("keys", session, list(keys))),
+        "notify.tmux_bridge.deliver_notify_to_session",
+        lambda session, prompt: captured.append((session, prompt)) or "%2",
     )
 
     result = CliRunner().invoke(
@@ -186,4 +178,4 @@ def test_notify_hidden_command_uses_session_notify_routes_for_tmux_bridge(xdg_ru
 
     assert result.exit_code == 0
     assert "notify ok: provider=tmux-bridge detail=delivered" in result.output
-    assert captured[0][1] == "target-session"
+    assert captured[0][0] == "target-session"
