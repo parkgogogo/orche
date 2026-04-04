@@ -1234,6 +1234,7 @@ def native_cli_args_from_meta(meta: Mapping[str, Any]) -> List[str]:
 def build_native_agent_launch_command(
     plugin: AgentPlugin,
     *,
+    session: str,
     cwd: Path,
     cli_args: Sequence[str],
 ) -> str:
@@ -1242,6 +1243,8 @@ def build_native_agent_launch_command(
     orche_shim = ensure_orche_shim()
     prefix.append(f"export ORCHE_BIN={shlex.quote(str(orche_shim))}")
     prefix.append(f"export PATH={shlex.quote(str(orche_shim.parent))}:$PATH")
+    if session:
+        prefix.append(f"export ORCHE_SESSION={shlex.quote(session)}")
     prefix.append(f"exec {' '.join(shlex.quote(part) for part in command)}")
     return " && ".join(prefix)
 
@@ -1266,6 +1269,7 @@ def ensure_native_agent_running(
         time.sleep(0.2)
     launch_command = build_native_agent_launch_command(
         plugin,
+        session=session,
         cwd=cwd,
         cli_args=cli_args,
     )

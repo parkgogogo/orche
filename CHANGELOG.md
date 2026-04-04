@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.9 - 2026-04-04
+
+- Export `ORCHE_SESSION` for native Codex and Claude launches so agents can reliably resolve their current session from inside the worker pane.
+- Add regression coverage for native launch commands to ensure session context is preserved across `open -- ...` and `orche codex`.
+- Refine `SKILL.md` to require session detection with `orche whoami` before choosing tmux notify targets, and to prefer managed sessions when notify routing matters.
+
 ## v0.4.8 - 2026-04-04
 
 - Add `orche codex` and `orche claude` shortcut commands that open a fresh native session in the current directory and attach immediately.

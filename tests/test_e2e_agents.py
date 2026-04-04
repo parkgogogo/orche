@@ -116,7 +116,7 @@ class FakeOrcheRuntime:
             pane.descendants = ["claude"]
             session = self._session_from_launch(launch_command)
             skip_permissions = "--dangerously-skip-permissions" in launch_command or "--permission-mode bypassPermissions" in launch_command
-            managed_launch = "--settings" in launch_command or "ORCHE_SESSION=" in launch_command
+            managed_launch = "--settings" in launch_command
             if session in self.force_startup_prompt or (managed_launch and not skip_permissions):
                 pane.capture = self._approval_capture("edit")
                 pane.awaiting_approval = True
@@ -563,6 +563,7 @@ def test_open_native_session_can_attach_interactively(xdg_runtime, tmp_path, mon
     assert runtime.selected_window_id == "@1"
     assert "export ORCHE_BIN=" in runtime.launch_commands[-1]
     assert "export PATH=" in runtime.launch_commands[-1]
+    assert "export ORCHE_SESSION=project-codex-main" in runtime.launch_commands[-1]
     assert "exec codex --model gpt-5.4" in runtime.launch_commands[-1]
     assert "--dangerously-bypass-approvals-and-sandbox" not in runtime.launch_commands[-1]
     assert "CODEX_HOME" not in runtime.launch_commands[-1]
@@ -578,6 +579,7 @@ def test_open_native_session_defaults_to_current_directory(xdg_runtime, tmp_path
     assert result.exit_code == 0
     assert "export ORCHE_BIN=" in runtime.launch_commands[-1]
     assert "export PATH=" in runtime.launch_commands[-1]
+    assert "export ORCHE_SESSION=project-claude-main" in runtime.launch_commands[-1]
     assert "exec claude --print --help" in runtime.launch_commands[-1]
     assert "--dangerously-skip-permissions" not in runtime.launch_commands[-1]
     assert "--settings" not in runtime.launch_commands[-1]
@@ -595,6 +597,7 @@ def test_codex_shortcut_launches_native_session_and_attaches(xdg_runtime, tmp_pa
     assert runtime.attached_session == backend.TMUX_SESSION or runtime.switched_session == backend.TMUX_SESSION
     assert runtime.selected_window_id == "@1"
     assert backend.load_meta("project-codex-abc123")["pane_id"] == "%1"
+    assert "export ORCHE_SESSION=project-codex-abc123" in runtime.launch_commands[-1]
     assert "exec codex --model gpt-5.4" in runtime.launch_commands[-1]
 
 

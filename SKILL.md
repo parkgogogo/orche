@@ -55,6 +55,34 @@ orche list
 
 Treat `prompt` as fire-and-follow-up, not fire-and-busy-wait.
 
+## Session Awareness First
+
+Before opening a worker or deciding a notify route, first determine whether you are already inside an `orche` session.
+
+Start with:
+
+```bash
+orche whoami
+```
+
+Interpretation:
+
+- if it returns a session name, you are inside an `orche`-managed tmux pane and that session is your safest default tmux notify target
+- if it fails, do not guess that you are inside a session; you are likely in a normal shell or outside the worker pane
+
+If `whoami` fails but you still need context, inspect the known sessions:
+
+```bash
+orche list
+```
+
+Rules:
+
+- prefer `orche whoami` over inferring from repo name, cwd, or tmux pane ids manually
+- do not assume the current supervisor session is called `orche` unless `whoami`, `list`, or the user explicitly establishes that
+- if the established current session is `orche`, then `tmux:orche` is the correct tmux notify target
+- if you cannot establish the current session, do not invent a tmux notify target
+
 ## Operating Rules
 
 ### Prefer handoff over live babysitting
@@ -127,6 +155,8 @@ Rules:
 - use `tmux:<session>` for agent-to-agent routing
 - use `discord:<channel-id>` only when the user explicitly wants Discord delivery
 - do not assume any global Discord config should be used automatically
+- when you are delegating from one live `orche` session to another, set the worker notify target to the session returned by `orche whoami`
+- if notify routing matters, prefer a managed session opened with `orche open --notify ...` instead of a native shortcut session
 
 `tmux` maps to the built-in `tmux-bridge` provider internally.
 
@@ -155,6 +185,27 @@ Rules:
 - raw agent args must come after `--`
 - native sessions do not take `--notify`
 - do not combine raw agent args with `--notify`
+- use `orche codex` / `orche claude` or native `open` only for ad-hoc interactive work, not for workers that must report back through notify
+
+## Choosing the Right Open Command
+
+Use managed open when you need a named worker with an explicit return path:
+
+```bash
+current_session="$(orche whoami)"
+orche open --cwd /repo --agent codex --name repo-worker --notify "tmux:${current_session}"
+```
+
+Use a native shortcut only when no notify binding is needed:
+
+```bash
+orche codex --model gpt-5.4
+```
+
+Practical default:
+
+- if the worker should report back, use `orche open --notify ...`
+- if you just want to enter a fresh agent terminal yourself, use `orche codex` or `orche claude`
 
 ## Multi-Session Pattern
 
