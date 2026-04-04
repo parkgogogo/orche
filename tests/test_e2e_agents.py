@@ -421,7 +421,7 @@ def test_codex_e2e_reports_startup_blocked_when_process_never_reaches_ready(xdg_
     )
 
     assert open_result.exit_code == 1
-    assert "startup blocked before reaching ready state" in open_result.stdout
+    assert "startup blocked before reaching ready state" in open_result.output
 
 
 def test_claude_e2e_launches_headlessly_without_startup_approval(xdg_runtime, tmp_path, monkeypatch):
