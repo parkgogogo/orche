@@ -470,6 +470,16 @@ def test_input_and_key_commands_use_positionals(xdg_runtime, monkeypatch):
     assert key_calls == [("demo-session", ["Down", "Enter"])]
 
 
+def test_key_help_explains_sequence_usage():
+    result = CliRunner().invoke(app, ["key", "--help"])
+
+    assert result.exit_code == 0
+    assert "Send one or more tmux key names to a session in order" in result.output
+    assert "Enter" in result.output
+    assert "C-c" in result.output
+    assert "orche input" in result.output
+
+
 def test_unknown_command_shows_clean_error(xdg_runtime, capsys, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["orche", "invalidcmd"])
     exit_code = cli.main()

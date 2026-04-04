@@ -130,7 +130,17 @@ def test_run_session_watchdog_emits_stalled_event(xdg_runtime, monkeypatch):
         payload.setdefault("tail", str(payload["capture"]))
         return payload
 
-    def fake_emit(session: str, *, event: str, summary: str, status: str, turn_id: str = "", cwd: str = "", source: str = ""):
+    def fake_emit(
+        session: str,
+        *,
+        event: str,
+        summary: str,
+        status: str,
+        turn_id: str = "",
+        cwd: str = "",
+        source: str = "",
+        tail_text: str = "",
+    ):
         emitted.append(
             {
                 "session": session,
@@ -140,6 +150,7 @@ def test_run_session_watchdog_emits_stalled_event(xdg_runtime, monkeypatch):
                 "turn_id": turn_id,
                 "cwd": cwd,
                 "source": source,
+                "tail_text": tail_text,
             }
         )
         meta = backend.load_meta(session)
@@ -170,6 +181,7 @@ def test_run_session_watchdog_emits_stalled_event(xdg_runtime, monkeypatch):
             "turn_id": "turn-1",
             "cwd": "/repo",
             "source": "watchdog",
+            "tail_text": "working",
         }
     ]
 
@@ -238,8 +250,18 @@ def test_run_session_watchdog_emits_failed_event_when_agent_exits(xdg_runtime, m
     def fake_sample(session: str, *, pane_id: str = ""):
         return dict(next(samples))
 
-    def fake_emit(session: str, *, event: str, summary: str, status: str, turn_id: str = "", cwd: str = "", source: str = ""):
-        emitted.append((event, summary, status, turn_id, cwd, source))
+    def fake_emit(
+        session: str,
+        *,
+        event: str,
+        summary: str,
+        status: str,
+        turn_id: str = "",
+        cwd: str = "",
+        source: str = "",
+        tail_text: str = "",
+    ):
+        emitted.append((event, summary, status, turn_id, cwd, source, tail_text))
         return True
 
     monkeypatch.setattr(backend, "sample_watchdog_state", fake_sample)
@@ -264,6 +286,7 @@ def test_run_session_watchdog_emits_failed_event_when_agent_exits(xdg_runtime, m
             "turn-2",
             "/repo",
             "watchdog",
+            "working",
         )
     ]
 
@@ -336,8 +359,9 @@ def test_run_session_watchdog_emits_periodic_reminder_after_last_notify(xdg_runt
         cwd: str = "",
         source: str = "",
         notification_key: str = "",
+        tail_text: str = "",
     ):
-        emitted.append((event, summary, status, turn_id, cwd, source, notification_key))
+        emitted.append((event, summary, status, turn_id, cwd, source, notification_key, tail_text))
         if event == "reminder":
             meta = backend.load_meta(session)
             meta.pop("pending_turn", None)
@@ -370,5 +394,6 @@ def test_run_session_watchdog_emits_periodic_reminder_after_last_notify(xdg_runt
             "/repo",
             "watchdog",
             "reminder:stalled:1:1",
+            "",
         )
     ]

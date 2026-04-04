@@ -35,6 +35,7 @@ LEGACY_TMUX_SESSION = "orche-smux"
 DEFAULT_CAPTURE_LINES = 200
 STARTUP_TIMEOUT = 90.0
 WATCHDOG_CAPTURE_LINES = 80
+NOTIFY_TAIL_LINES = 20
 WATCHDOG_POLL_INTERVAL = 3.0
 WATCHDOG_STALLED_AFTER = 45.0
 WATCHDOG_NEEDS_INPUT_AFTER = 120.0
@@ -56,6 +57,10 @@ CONFIG_KEY_MAP = {
 
 
 class OrcheError(RuntimeError):
+    pass
+
+
+class AgentStartupBlockedError(OrcheError):
     pass
 
 
@@ -498,6 +503,64 @@ def _normalize_watchdog_tail(capture: str) -> str:
     return compact_text("\n".join(line.rstrip() for line in tail))
 
 
+def _pane_signature(
+    *,
+    tail: str,
+    cursor_x: str,
+    cursor_y: str,
+    pane_in_mode: str,
+    pane_current_command: str,
+) -> str:
+    return "|".join(
+        [
+            tail,
+            cursor_x,
+            cursor_y,
+            pane_in_mode,
+            pane_current_command,
+        ]
+    )
+
+
+def sample_pane_state(
+    plugin: AgentPlugin,
+    pane_id: str,
+    *,
+    capture_lines: int = WATCHDOG_CAPTURE_LINES,
+) -> Dict[str, Any]:
+    resolved_pane_id = str(pane_id or "").strip()
+    info = get_pane_info(resolved_pane_id) if resolved_pane_id else None
+    capture = read_pane(resolved_pane_id, capture_lines) if resolved_pane_id else ""
+    cursor = pane_cursor_state(resolved_pane_id) if resolved_pane_id else {}
+    cpu_percent = process_cpu_percent((info or {}).get("pane_pid", ""))
+    tail = _normalize_watchdog_tail(capture)
+    cursor_x = str(cursor.get("cursor_x") or "")
+    cursor_y = str(cursor.get("cursor_y") or "")
+    pane_in_mode = str(cursor.get("pane_in_mode") or "")
+    pane_dead = str(cursor.get("pane_dead") or (info or {}).get("pane_dead") or "")
+    pane_current_command = str((info or {}).get("pane_current_command") or "")
+    return {
+        "pane_id": resolved_pane_id,
+        "capture": capture,
+        "capture_bytes": len(capture.encode("utf-8")),
+        "tail": tail,
+        "signature": _pane_signature(
+            tail=tail,
+            cursor_x=cursor_x,
+            cursor_y=cursor_y,
+            pane_in_mode=pane_in_mode,
+            pane_current_command=pane_current_command,
+        ),
+        "cursor_x": cursor_x,
+        "cursor_y": cursor_y,
+        "pane_in_mode": pane_in_mode,
+        "pane_dead": pane_dead,
+        "pane_current_command": pane_current_command,
+        "cpu_percent": cpu_percent,
+        "agent_running": bool(resolved_pane_id and is_agent_running(plugin, resolved_pane_id)),
+    }
+
+
 def sample_watchdog_state(session: str, *, pane_id: str = "") -> Dict[str, Any]:
     meta = load_meta(session)
     pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else {}
@@ -507,33 +570,34 @@ def sample_watchdog_state(session: str, *, pane_id: str = "") -> Dict[str, Any]:
     info = get_pane_info(resolved_pane_id) if resolved_pane_id else None
     plugin_name = str(meta.get("agent") or "codex")
     plugin = get_agent(plugin_name)
-    capture = read_pane(resolved_pane_id, WATCHDOG_CAPTURE_LINES) if resolved_pane_id else ""
-    cursor = pane_cursor_state(resolved_pane_id) if resolved_pane_id else {}
-    cpu_percent = process_cpu_percent((info or {}).get("pane_pid", ""))
-    tail = _normalize_watchdog_tail(capture)
-    signature = "|".join(
-        [
-            tail,
-            str(cursor.get("cursor_x") or ""),
-            str(cursor.get("cursor_y") or ""),
-            str(cursor.get("pane_in_mode") or ""),
-            str((info or {}).get("pane_current_command") or ""),
-        ]
+    sample = sample_pane_state(plugin, resolved_pane_id, capture_lines=WATCHDOG_CAPTURE_LINES)
+    if info is not None and not sample.get("pane_current_command"):
+        sample["pane_current_command"] = str(info.get("pane_current_command") or "")
+    return sample
+
+
+def observable_progress_detected(
+    previous_signature: str,
+    previous_cursor: tuple[str, str],
+    sample: Mapping[str, Any],
+) -> bool:
+    current_cursor = (str(sample.get("cursor_x") or ""), str(sample.get("cursor_y") or ""))
+    return (
+        not previous_signature
+        or previous_signature != str(sample.get("signature") or "")
+        or previous_cursor != current_cursor
+        or float(sample.get("cpu_percent") or 0.0) >= WATCHDOG_ACTIVE_CPU_THRESHOLD
     )
-    return {
-        "pane_id": resolved_pane_id,
-        "capture": capture,
-        "capture_bytes": len(capture.encode("utf-8")),
-        "tail": tail,
-        "signature": signature,
-        "cursor_x": str(cursor.get("cursor_x") or ""),
-        "cursor_y": str(cursor.get("cursor_y") or ""),
-        "pane_in_mode": str(cursor.get("pane_in_mode") or ""),
-        "pane_dead": str(cursor.get("pane_dead") or (info or {}).get("pane_dead") or ""),
-        "pane_current_command": str((info or {}).get("pane_current_command") or ""),
-        "cpu_percent": cpu_percent,
-        "agent_running": bool(resolved_pane_id and is_agent_running(plugin, resolved_pane_id)),
-    }
+
+
+def recent_capture_excerpt(capture: str, *, lines: int = NOTIFY_TAIL_LINES, max_chars: int = 1200) -> str:
+    excerpt = "\n".join(capture.splitlines()[-max(lines, 1) :]).strip()
+    if len(excerpt) <= max_chars:
+        return excerpt
+    trimmed = excerpt[-max_chars:].lstrip()
+    if not trimmed:
+        return ""
+    return f"...\n{trimmed}"
 
 
 def save_meta(session: str, meta: Dict[str, Any]) -> None:
@@ -1123,16 +1187,27 @@ def is_agent_running(plugin: AgentPlugin, pane_id: str) -> bool:
 def wait_for_agent_ready(plugin: AgentPlugin, pane_id: str, cwd: Path, *, timeout: float = STARTUP_TIMEOUT) -> str:
     deadline = time.time() + timeout
     ready_streak = 0
+    last_signature = ""
+    last_cursor = ("", "")
+    last_sample: Dict[str, Any] = {}
     while time.time() <= deadline:
-        capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES)
+        sample = sample_pane_state(plugin, pane_id, capture_lines=DEFAULT_CAPTURE_LINES)
+        capture = str(sample.get("capture") or "")
         if any(prompt in capture for prompt in plugin.login_prompts):
             raise OrcheError(f"{plugin.display_name} is not logged in inside the tmux pane")
-        running = is_agent_running(plugin, pane_id)
-        ready_candidate = running and plugin.capture_has_ready_surface(capture, cwd)
+        if str(sample.get("pane_dead") or "") == "1":
+            raise OrcheError(f"{plugin.display_name} pane exited before becoming ready: {pane_id}")
+        ready_candidate = bool(sample.get("agent_running")) and plugin.capture_has_ready_surface(capture, cwd)
         ready_streak = ready_streak + 1 if ready_candidate else 0
         if ready_streak >= plugin.ready_streak_required:
             return pane_id
+        _ = observable_progress_detected(last_signature, last_cursor, sample)
+        last_signature = str(sample.get("signature") or "")
+        last_cursor = (str(sample.get("cursor_x") or ""), str(sample.get("cursor_y") or ""))
+        last_sample = sample
         time.sleep(1.0)
+    if bool(last_sample.get("agent_running")):
+        raise AgentStartupBlockedError(f"{plugin.display_name} startup blocked before reaching ready state in {pane_id}")
     raise OrcheError(f"Timed out waiting for {plugin.display_name} to become ready in {pane_id}")
 
 
@@ -1177,7 +1252,20 @@ def ensure_agent_running(
         capture=True,
     )
     tmux("send-keys", "-t", pane_id, "Enter", check=True, capture=True)
-    pane_id = wait_for_agent_ready(plugin, pane_id, cwd)
+    try:
+        pane_id = wait_for_agent_ready(plugin, pane_id, cwd)
+    except AgentStartupBlockedError:
+        capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES) if pane_exists(pane_id) else ""
+        emit_internal_notify(
+            session,
+            event="startup-blocked",
+            summary=f"{plugin.display_name} startup blocked before reaching ready state",
+            status="warning",
+            cwd=str(cwd),
+            source="startup",
+            tail_text=recent_capture_excerpt(capture),
+        )
+        raise
     bridge_name_pane(pane_id, session)
     meta = load_meta(session)
     meta.update(
@@ -1533,6 +1621,7 @@ def emit_internal_notify(
     cwd: str = "",
     source: str = "",
     notification_key: str = "",
+    tail_text: str = "",
 ) -> bool:
     payload = {
         "event": event,
@@ -1547,6 +1636,9 @@ def emit_internal_notify(
             "notification_key": notification_key,
         },
     }
+    if tail_text.strip():
+        payload["metadata"]["tail_text"] = tail_text.strip()
+        payload["metadata"]["tail_lines"] = NOTIFY_TAIL_LINES
     command = _orche_bootstrap_command() + ["notify-internal", "--session", session, "--status", status]
     result = subprocess.run(
         command,
@@ -1560,7 +1652,7 @@ def emit_internal_notify(
         log_event(
             "watchdog.notify.failed",
             session=session,
-            event=event,
+            notify_event=event,
             status=status,
             detail=shorten((result.stderr or result.stdout or "").strip(), 400),
         )
@@ -1733,12 +1825,7 @@ def run_session_watchdog(
             str(watchdog.get("last_cursor_y") or ""),
         )
         current_cursor = (str(sample.get("cursor_x") or ""), str(sample.get("cursor_y") or ""))
-        progress_detected = (
-            not previous_signature
-            or previous_signature != str(sample.get("signature") or "")
-            or previous_cursor != current_cursor
-            or float(sample.get("cpu_percent") or 0.0) >= WATCHDOG_ACTIVE_CPU_THRESHOLD
-        )
+        progress_detected = observable_progress_detected(previous_signature, previous_cursor, sample)
         last_progress_at = float(watchdog.get("last_progress_at") or pending_turn.get("submitted_at") or now)
         idle_samples = int(watchdog.get("idle_samples") or 0)
         state = "running"
@@ -1785,6 +1872,7 @@ def run_session_watchdog(
                     turn_id=turn_id,
                     cwd=str(meta.get("cwd") or ""),
                     source="watchdog",
+                    tail_text=recent_capture_excerpt(str(sample.get("capture") or "")),
                 )
             update_watchdog_metadata(
                 session,

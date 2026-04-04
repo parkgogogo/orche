@@ -18,6 +18,8 @@ EVENT_ALIASES = {
     "subagentstop": "completed",
     "completed": "completed",
     "complete": "completed",
+    "startup-blocked": "startup-blocked",
+    "startup_blocked": "startup-blocked",
     "stalled": "stalled",
     "needs-input": "needs-input",
     "needs_input": "needs-input",
@@ -242,9 +244,30 @@ def _payload_source(payload: Mapping[str, Any]) -> str:
     )
 
 
+def _payload_tail_text(payload: Mapping[str, Any]) -> str:
+    return _first_string(
+        payload.get("tail_text"),
+        payload.get("tail"),
+        _payload_value(payload, ("metadata", "tail_text")),
+        _payload_value(payload, ("metadata", "tail")),
+        _payload_value(payload, ("payload", "tail_text")),
+        _payload_value(payload, ("payload", "tail")),
+    )
+
+
+def _payload_tail_lines(payload: Mapping[str, Any]) -> str:
+    return _first_string(
+        payload.get("tail_lines"),
+        _payload_value(payload, ("metadata", "tail_lines")),
+        _payload_value(payload, ("payload", "tail_lines")),
+    )
+
+
 def _default_summary_for_event(event_name: str, notify_config: NotifyConfig) -> str:
     if event_name == "failed":
         return "Agent turn failed"
+    if event_name == "startup-blocked":
+        return "Agent startup blocked"
     if event_name == "needs-input":
         return "Agent likely needs input"
     if event_name == "stalled":
@@ -287,5 +310,7 @@ def build_message_from_payload(
         metadata={
             "turn_id": _payload_turn_id(payload),
             "source": _payload_source(payload),
+            "tail_text": _payload_tail_text(payload),
+            "tail_lines": _payload_tail_lines(payload),
         },
     )

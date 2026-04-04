@@ -114,3 +114,30 @@ def test_discord_notifier_renders_status_prefix_and_respects_disabled_session_li
     )
 
     assert fake_http_client.requests[0]["json_body"]["content"] == "[failure] done\ncwd: `/tmp/repo`"
+
+
+def test_discord_notifier_appends_recent_output(fake_http_client):
+    notifier = DiscordNotifier(
+        NotifyConfig(
+            include_session=False,
+            discord=DiscordNotifyConfig(bot_token="bot-token", mention_user_id=""),
+        ),
+        http_client=fake_http_client,
+    )
+
+    notifier.send(
+        NotifyEvent(
+            event="startup-blocked",
+            summary="Codex startup blocked",
+            session="demo",
+            cwd="/tmp/repo",
+            status="warning",
+            metadata={"tail_text": "line1\nline2"},
+        ),
+        ResolvedRoute(provider="discord", target="123"),
+    )
+
+    assert (
+        fake_http_client.requests[0]["json_body"]["content"]
+        == "[warning] Codex startup blocked\ncwd: `/tmp/repo`\n\nRecent output:\nline1\nline2"
+    )

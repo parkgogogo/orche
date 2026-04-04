@@ -29,6 +29,7 @@ class FakePane:
     awaiting_approval: bool = False
     agent: str = ""
     launch_pending_enter: bool = False
+    startup_blocked: bool = False
 
 
 class FakeClock:
@@ -55,6 +56,7 @@ class FakeOrcheRuntime:
         self.launch_commands: list[str] = []
         self.prompt_scenarios: dict[str, deque[str]] = {}
         self.force_startup_prompt: set[str] = set()
+        self.force_codex_startup_blocked: set[str] = set()
         self.selected_window_id = ""
         self.attached_session = ""
         self.switched_session = ""
@@ -65,6 +67,9 @@ class FakeOrcheRuntime:
 
     def require_startup_approval(self, session: str) -> None:
         self.force_startup_prompt.add(session)
+
+    def require_codex_startup_blocked(self, session: str) -> None:
+        self.force_codex_startup_blocked.add(session)
 
     def _result(self, args: list[str], returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args, returncode, stdout=stdout, stderr=stderr)
@@ -126,7 +131,13 @@ class FakeOrcheRuntime:
         pane.agent = "codex"
         pane.pane_current_command = "codex"
         pane.descendants = ["codex"]
-        pane.capture = self._ready_capture("codex", pane.cwd)
+        session = self._session_from_launch(launch_command)
+        if session in self.force_codex_startup_blocked:
+            pane.capture = "Booting workspace interface"
+            pane.startup_blocked = True
+        else:
+            pane.capture = self._ready_capture("codex", pane.cwd)
+            pane.startup_blocked = False
 
     def _session_from_launch(self, launch_command: str) -> str:
         marker = "export ORCHE_SESSION="
@@ -226,7 +237,12 @@ class FakeOrcheRuntime:
             pane = self.panes.get(args[args.index("-t") + 1])
             if pane is None:
                 return self._result(argv, 1)
-            return self._result(argv, stdout=pane.pane_id)
+            format_value = args[-1]
+            if format_value == "#{pane_id}":
+                return self._result(argv, stdout=pane.pane_id)
+            if format_value == "#{cursor_x}\t#{cursor_y}\t#{pane_in_mode}\t#{pane_dead}":
+                return self._result(argv, stdout=f"1\t1\t0\t{pane.pane_dead}")
+            return self._result(argv, stdout="")
         if command == "select-window":
             self.selected_window_id = args[args.index("-t") + 1]
             return self._result(argv)
@@ -381,6 +397,31 @@ def test_codex_e2e_session_lifecycle(xdg_runtime, tmp_path, monkeypatch):
     assert "Completed: summarize repo" in read_result.stdout
     assert close_result.exit_code == 0
     assert backend.load_meta(session) == {}
+
+
+def test_codex_e2e_reports_startup_blocked_when_process_never_reaches_ready(xdg_runtime, tmp_path, monkeypatch):
+    runtime = make_runtime(monkeypatch, tmp_path)
+    runner = CliRunner()
+    session = "repo-codex-main"
+    runtime.require_codex_startup_blocked(session)
+
+    open_result = runner.invoke(
+        app,
+        [
+            "open",
+            "--cwd",
+            str(runtime.cwd),
+            "--agent",
+            "codex",
+            "--name",
+            session,
+            "--notify",
+            "discord:1234567890",
+        ],
+    )
+
+    assert open_result.exit_code == 1
+    assert "startup blocked before reaching ready state" in open_result.stdout
 
 
 def test_claude_e2e_launches_headlessly_without_startup_approval(xdg_runtime, tmp_path, monkeypatch):
@@ -547,7 +588,7 @@ def test_claude_e2e_startup_times_out_if_permission_bypass_is_removed(xdg_runtim
     )
 
     assert result.exit_code == 1
-    assert "Timed out waiting for Claude Code to become ready" in result.output
+    assert "Claude Code startup blocked before reaching ready state" in result.output
 
 
 def test_open_native_session_can_attach_interactively(xdg_runtime, tmp_path, monkeypatch):

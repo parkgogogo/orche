@@ -539,10 +539,23 @@ def input_text(
         _handle_error(exc)
 
 
-@app.command("key")
+@app.command(
+    "key",
+    help=(
+        "Send one or more tmux key names to a session in order. "
+        "Use `orche input` for literal text, and combine it with `orche key` "
+        "for TUI interactions such as typing text and then sending `Enter`."
+    ),
+)
 def key(
     session: str = typer.Argument(..., help="Session name."),
-    keys: List[str] = typer.Argument(..., help="Key names to send."),
+    keys: List[str] = typer.Argument(
+        ...,
+        help=(
+            "One or more tmux key names to send in sequence, for example "
+            "`Enter`, `C-c`, `Escape`, `Tab`, `Up`, `Down`, `Left`, `Right`."
+        ),
+    ),
 ) -> None:
     try:
         cwd, agent, _meta = resolve_session_context(session=session, require_cwd_agent=True)

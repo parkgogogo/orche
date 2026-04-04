@@ -24,17 +24,6 @@ READY_SURFACE_HINTS = (
     "shift+tab",
     "esc to interrupt",
 )
-BLOCKING_PROMPT_HINTS = (
-    "approval required",
-    "approve this",
-    "approve?",
-    "allow this",
-    "permission required",
-    "waiting for approval",
-    "waiting for user input",
-    "press y to approve",
-    "yes, don't ask again",
-)
 
 
 def default_claude_home_path(session: str) -> Path:
@@ -75,12 +64,6 @@ def build_settings_payload(runtime_home: Path, *, session: str, discord_channel_
             ]
         }
     }
-
-
-def is_blocking_prompt_surface(capture: str) -> bool:
-    lowered = capture.lower()
-    return any(hint in lowered for hint in BLOCKING_PROMPT_HINTS)
-
 
 class ClaudeAgent(AgentPlugin):
     name = "claude"
@@ -144,10 +127,8 @@ class ClaudeAgent(AgentPlugin):
 
     def capture_has_ready_surface(self, capture: str, cwd: Path) -> bool:
         lowered = capture.lower()
-        if is_blocking_prompt_surface(capture):
-            return False
         has_brand = "claude code" in lowered or "\nclaude" in lowered or " claude" in lowered
-        has_context = str(cwd) in capture or any(hint in lowered for hint in READY_SURFACE_HINTS) or bool(capture.strip())
+        has_context = str(cwd) in capture or any(hint in lowered for hint in READY_SURFACE_HINTS)
         return has_brand and has_context
 
     def cleanup_runtime(self, runtime: AgentRuntime) -> None:

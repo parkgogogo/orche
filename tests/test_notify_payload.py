@@ -199,6 +199,23 @@ def test_build_message_from_payload_reads_watchdog_metadata_and_event_aliases():
     assert message.metadata["source"] == "watchdog"
 
 
+def test_build_message_from_payload_reads_startup_blocked_tail_metadata():
+    message = build_message_from_payload(
+        '{"event":"startup_blocked","summary":"","session":"demo","metadata":{"source":"startup","tail_text":"line1\\nline2","tail_lines":20}}',
+        notify_config=NotifyConfig(discord=DiscordNotifyConfig(mention_user_id="")),
+        runtime_config={},
+        summary_loader=lambda session: "",
+        status="warning",
+    )
+
+    assert message is not None
+    assert message.event == "startup-blocked"
+    assert message.summary == "Agent startup blocked"
+    assert message.metadata["source"] == "startup"
+    assert message.metadata["tail_text"] == "line1\nline2"
+    assert message.metadata["tail_lines"] == "20"
+
+
 def test_build_message_from_payload_uses_failed_default_summary():
     message = build_message_from_payload(
         '{"event":"failed","summary":"   ","session":"demo"}',

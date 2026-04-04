@@ -75,4 +75,7 @@ class DiscordNotifier(Notifier):
             content += f"\ncwd: `{event.cwd}`"
         if self.config.include_session and event.session:
             content += f"\nsession: `{event.session}`"
+        tail_text = str(event.metadata.get("tail_text") or "").strip()
+        if tail_text:
+            content += f"\n\nRecent output:\n{tail_text}"
         return content[: self.config.max_message_chars]

@@ -31,14 +31,16 @@ class TmuxBridgeNotifier(Notifier):
         session = event.session or "-"
         cwd = event.cwd or "-"
         summary = event.summary or self.config.default_message_prefix
-        return "\n".join(
-            [
-                "orche notify",
-                f"source session: {session}",
-                f"event: {event_name}",
-                f"status: {status}",
-                f"cwd: {cwd}",
-                "",
-                summary,
-            ]
-        )
+        lines = [
+            "orche notify",
+            f"source session: {session}",
+            f"event: {event_name}",
+            f"status: {status}",
+            f"cwd: {cwd}",
+            "",
+            summary,
+        ]
+        tail_text = str(event.metadata.get("tail_text") or "").strip()
+        if tail_text:
+            lines.extend(["", "Recent output:", tail_text])
+        return "\n".join(lines)

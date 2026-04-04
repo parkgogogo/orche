@@ -59,6 +59,33 @@ def test_tmux_bridge_notifier_uses_default_prefix_for_empty_summary(monkeypatch)
     ]
 
 
+def test_tmux_bridge_notifier_appends_recent_output(monkeypatch):
+    captured = []
+
+    monkeypatch.setattr(
+        "notify.tmux_bridge.deliver_notify_to_session",
+        lambda session, prompt: captured.append(prompt) or "%42",
+    )
+
+    notifier = TmuxBridgeNotifier(NotifyConfig())
+
+    notifier.send(
+        NotifyEvent(
+            event="startup-blocked",
+            summary="Codex startup blocked",
+            session="source",
+            cwd="/tmp/repo",
+            status="warning",
+            metadata={"tail_text": "line1\nline2"},
+        ),
+        ResolvedRoute(provider="tmux-bridge", target="target-session"),
+    )
+
+    assert captured == [
+        "orche notify\nsource session: source\nevent: startup-blocked\nstatus: warning\ncwd: /tmp/repo\n\nCodex startup blocked\n\nRecent output:\nline1\nline2"
+    ]
+
+
 def test_tmux_bridge_notifier_requires_target_session():
     notifier = TmuxBridgeNotifier(NotifyConfig())
 
