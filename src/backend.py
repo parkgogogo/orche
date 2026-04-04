@@ -748,6 +748,17 @@ def list_sessions() -> List[Dict[str, Any]]:
     return sessions
 
 
+def session_exists(session: str) -> bool:
+    session_name = str(session or "").strip()
+    if not session_name:
+        return False
+    if load_meta(session_name):
+        return True
+    if bridge_resolve(session_name):
+        return True
+    return find_window(window_name(session_name)) is not None
+
+
 def _current_tmux_value(fmt: str) -> str:
     result = tmux("display-message", "-p", fmt, check=False, capture=True)
     if result.returncode != 0:

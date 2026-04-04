@@ -239,6 +239,7 @@ def test_open_expands_cwd_user_home_for_native_session(xdg_runtime, monkeypatch)
         return "%1"
 
     monkeypatch.setattr(cli, "ensure_native_session", fake_ensure_native_session)
+    monkeypatch.setattr(cli.secrets, "token_hex", lambda nbytes: "abc123")
     monkeypatch.setattr(cli, "append_action_history", lambda *args, **kwargs: None)
 
     result = runner.invoke(
@@ -255,6 +256,7 @@ def test_open_expands_cwd_user_home_for_native_session(xdg_runtime, monkeypatch)
     )
 
     assert result.exit_code == 0
+    assert captured["session"] == "project-codex-abc123"
     assert captured["cwd"] == project_dir.resolve()
     assert captured["agent"] == "codex"
     assert captured["cli_args"] == ["--model", "gpt-5.4"]
@@ -274,6 +276,7 @@ def test_open_passes_notify_binding_to_managed_session(xdg_runtime, monkeypatch)
         return "%1"
 
     monkeypatch.setattr(cli, "ensure_session", fake_ensure_session)
+    monkeypatch.setattr(cli.secrets, "token_hex", lambda nbytes: "abc123")
     monkeypatch.setattr(cli, "append_action_history", lambda *args, **kwargs: None)
 
     result = runner.invoke(
@@ -290,8 +293,35 @@ def test_open_passes_notify_binding_to_managed_session(xdg_runtime, monkeypatch)
     )
 
     assert result.exit_code == 0
+    assert captured["session"] == "project-codex-abc123"
     assert captured["kwargs"]["notify_to"] == "tmux-bridge"
     assert captured["kwargs"]["notify_target"] == "target-session"
+
+
+def test_open_rejects_existing_session_name(xdg_runtime, monkeypatch):
+    runner = CliRunner()
+    project_dir = xdg_runtime["home"] / "project"
+    project_dir.mkdir()
+
+    monkeypatch.chdir(project_dir)
+    monkeypatch.setattr(cli, "session_exists", lambda session: session == "existing-session")
+
+    result = runner.invoke(
+        app,
+        [
+            "open",
+            "--agent",
+            "codex",
+            "--name",
+            "existing-session",
+            "--model",
+            "gpt-5.4",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Session existing-session already exists" in result.output
+    assert "orche attach" in result.output
 
 
 def test_open_rejects_invalid_notify_binding(xdg_runtime):

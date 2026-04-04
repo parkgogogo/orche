@@ -45,6 +45,7 @@ from backend import (
     resolve_session_context,
     run_session_watchdog,
     send_prompt,
+    session_exists,
     set_config_value,
     supported_agent_names,
 )
@@ -209,7 +210,7 @@ def _notify_runtime_config(runtime_config: dict, session: str) -> dict:
 
 
 def _session_name(name: Optional[str], cwd: Path, agent: str) -> str:
-    return name or default_session_name(cwd.resolve(), agent, "main")
+    return name or default_session_name(cwd.resolve(), agent, secrets.token_hex(3))
 
 
 def _shortcut_session_name(cwd: Path, agent: str) -> str:
@@ -323,6 +324,10 @@ def _open_session(
     cli_args: list[str],
 ) -> tuple[str, str]:
     session = _session_name(name, cwd, agent)
+    if session_exists(session):
+        raise OrcheError(
+            f"Session {session} already exists. Use 'orche attach {session}' or choose a different --name."
+        )
     notify_to, notify_target = _parse_notify_binding(notify)
     if cli_args and notify_to:
         raise OrcheError("open does not support combining --notify with raw agent args")
@@ -436,7 +441,7 @@ def open_session(
     ctx: typer.Context,
     agent: str = typer.Option(..., help=f"Agent name. Supported: {', '.join(supported_agent_names())}."),
     cwd: Optional[Path] = typer.Option(None, callback=_resolve_cwd, file_okay=False, dir_okay=True, resolve_path=False, help="Working directory for the session. Defaults to the current directory."),
-    name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-<agent>-main."),
+    name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-<agent>-<random>."),
     notify: Optional[str] = typer.Option(None, "--notify", help="Notify target in the form discord:<channel-id> or tmux:<session>."),
 ) -> None:
     try:

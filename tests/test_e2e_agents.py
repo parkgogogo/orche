@@ -598,9 +598,10 @@ def test_claude_e2e_keeps_session_when_startup_needs_input(xdg_runtime, tmp_path
 def test_open_native_session_can_attach_interactively(xdg_runtime, tmp_path, monkeypatch):
     runtime = make_runtime(monkeypatch, tmp_path)
     runner = CliRunner()
+    monkeypatch.setattr(cli.secrets, "token_hex", lambda nbytes: "abc123")
 
     result = runner.invoke(app, ["open", "--cwd", str(runtime.cwd), "--agent", "codex", "--model", "gpt-5.4"])
-    attach_result = runner.invoke(app, ["attach", "project-codex-main"])
+    attach_result = runner.invoke(app, ["attach", "project-codex-abc123"])
 
     assert result.exit_code == 0
     assert attach_result.exit_code == 0
@@ -608,7 +609,7 @@ def test_open_native_session_can_attach_interactively(xdg_runtime, tmp_path, mon
     assert runtime.selected_window_id == "@1"
     assert "export ORCHE_BIN=" in runtime.launch_commands[-1]
     assert "export PATH=" in runtime.launch_commands[-1]
-    assert "export ORCHE_SESSION=project-codex-main" in runtime.launch_commands[-1]
+    assert "export ORCHE_SESSION=project-codex-abc123" in runtime.launch_commands[-1]
     assert "exec codex --model gpt-5.4" in runtime.launch_commands[-1]
     assert "--dangerously-bypass-approvals-and-sandbox" not in runtime.launch_commands[-1]
     assert "CODEX_HOME" not in runtime.launch_commands[-1]
@@ -618,13 +619,14 @@ def test_open_native_session_defaults_to_current_directory(xdg_runtime, tmp_path
     runtime = make_runtime(monkeypatch, tmp_path)
     runner = CliRunner()
     monkeypatch.chdir(runtime.cwd)
+    monkeypatch.setattr(cli.secrets, "token_hex", lambda nbytes: "abc123")
 
     result = runner.invoke(app, ["open", "--agent", "claude", "--", "--print", "--help"])
 
     assert result.exit_code == 0
     assert "export ORCHE_BIN=" in runtime.launch_commands[-1]
     assert "export PATH=" in runtime.launch_commands[-1]
-    assert "export ORCHE_SESSION=project-claude-main" in runtime.launch_commands[-1]
+    assert "export ORCHE_SESSION=project-claude-abc123" in runtime.launch_commands[-1]
     assert "exec claude --print --help" in runtime.launch_commands[-1]
     assert "--dangerously-skip-permissions" not in runtime.launch_commands[-1]
     assert "--settings" not in runtime.launch_commands[-1]
@@ -664,6 +666,7 @@ def test_attach_falls_back_to_attach_session_when_switch_client_has_no_current_c
     runtime = make_runtime(monkeypatch, tmp_path)
     runner = CliRunner()
     monkeypatch.setenv("TMUX", "fake-client")
+    monkeypatch.setattr(cli.secrets, "token_hex", lambda nbytes: "abc123")
 
     open_result = runner.invoke(app, ["open", "--cwd", str(runtime.cwd), "--agent", "codex", "--model", "gpt-5.4"])
     assert open_result.exit_code == 0
@@ -675,7 +678,7 @@ def test_attach_falls_back_to_attach_session_when_switch_client_has_no_current_c
 
     monkeypatch.setattr(backend, "tmux", tmux_with_failed_switch)
 
-    result = runner.invoke(app, ["attach", "project-codex-main"])
+    result = runner.invoke(app, ["attach", "project-codex-abc123"])
 
     assert result.exit_code == 0
     assert runtime.attached_session == backend.TMUX_SESSION
