@@ -163,3 +163,35 @@ def test_codex_submit_prompt_skips_delay_for_empty_prompt(monkeypatch):
 def test_codex_submit_prompt_delay_scales_with_prompt_length():
     assert codex_submit_settle_seconds("short") == CODEX_SUBMIT_SETTLE_MIN_SECONDS
     assert codex_submit_settle_seconds("x" * 200) == CODEX_SUBMIT_SETTLE_MAX_SECONDS
+
+
+def test_ensure_native_agent_running_uses_respawn_pane_without_send_keys(xdg_runtime, tmp_path, monkeypatch):
+    plugin = backend.get_agent("codex")
+    tmux_calls = []
+
+    monkeypatch.setattr(backend, "is_agent_running", lambda plugin, pane_id: False)
+    monkeypatch.setattr(backend, "get_pane_info", lambda pane_id: {"pane_dead": "0"})
+    monkeypatch.setattr(backend, "wait_for_agent_process_start", lambda plugin, pane_id: pane_id)
+    monkeypatch.setattr(backend, "bridge_name_pane", lambda pane_id, session: None)
+
+    def fake_tmux(*args, **kwargs):
+        tmux_calls.append(args)
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return Result()
+
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+
+    pane_id = backend.ensure_native_agent_running(
+        plugin,
+        "demo-codex",
+        tmp_path,
+        "%9",
+        cli_args=["--model", "gpt-5.4"],
+    )
+
+    assert pane_id == "%9"
+    assert any(call[:4] == ("respawn-pane", "-k", "-t", "%9") for call in tmux_calls)
+    assert not any(call and call[0] == "send-keys" for call in tmux_calls)

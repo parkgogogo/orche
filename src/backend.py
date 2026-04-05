@@ -1282,11 +1282,6 @@ def ensure_agent_running(
     info = get_pane_info(pane_id)
     if info is None:
         raise OrcheError(f"Pane disappeared before {plugin.display_name} launch: {pane_id}")
-    if info.get("pane_dead") == "1":
-        tmux("respawn-pane", "-k", "-t", pane_id, "-c", str(cwd), check=True, capture=True)
-    else:
-        tmux("send-keys", "-t", pane_id, "C-c", check=False, capture=True)
-        time.sleep(0.2)
     try:
         launch_command = plugin.build_launch_command(
             approve_all=approve_all,
@@ -1298,15 +1293,16 @@ def ensure_agent_running(
     except (RuntimeError, ValueError) as exc:
         raise OrcheError(str(exc)) from exc
     tmux(
-        "send-keys",
+        "respawn-pane",
+        "-k",
         "-t",
         pane_id,
-        "-l",
+        "-c",
+        str(cwd),
         launch_command,
         check=True,
         capture=True,
     )
-    tmux("send-keys", "-t", pane_id, "Enter", check=True, capture=True)
     pane_id = wait_for_agent_process_start(plugin, pane_id)
     bridge_name_pane(pane_id, session)
     meta = load_meta(session)
@@ -1447,11 +1443,6 @@ def ensure_native_agent_running(
     info = get_pane_info(pane_id)
     if info is None:
         raise OrcheError(f"Pane disappeared before {plugin.display_name} launch: {pane_id}")
-    if info.get("pane_dead") == "1":
-        tmux("respawn-pane", "-k", "-t", pane_id, "-c", str(cwd), check=True, capture=True)
-    else:
-        tmux("send-keys", "-t", pane_id, "C-c", check=False, capture=True)
-        time.sleep(0.2)
     launch_command = build_native_agent_launch_command(
         plugin,
         session=session,
@@ -1459,15 +1450,16 @@ def ensure_native_agent_running(
         cli_args=cli_args,
     )
     tmux(
-        "send-keys",
+        "respawn-pane",
+        "-k",
         "-t",
         pane_id,
-        "-l",
+        "-c",
+        str(cwd),
         launch_command,
         check=True,
         capture=True,
     )
-    tmux("send-keys", "-t", pane_id, "Enter", check=True, capture=True)
     pane_id = wait_for_agent_process_start(plugin, pane_id)
     bridge_name_pane(pane_id, session)
     meta = load_meta(session)
