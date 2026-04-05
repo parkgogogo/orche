@@ -1974,22 +1974,6 @@ def run_session_watchdog(
         )
         current_cursor = (str(sample.get("cursor_x") or ""), str(sample.get("cursor_y") or ""))
         progress_detected = observable_progress_detected(previous_signature, previous_cursor, sample)
-        completion_summary = _pending_turn_completion_summary(
-            plugin,
-            pending_turn=pending_turn,
-            capture=str(sample.get("capture") or ""),
-        )
-        if completion_summary:
-            emit_internal_notify(
-                session,
-                event="completed",
-                summary=completion_summary,
-                status="success",
-                turn_id=turn_id,
-                cwd=str(meta.get("cwd") or ""),
-                source="watchdog",
-            )
-            return "completed"
         last_progress_at = float(watchdog.get("last_progress_at") or pending_turn.get("submitted_at") or now)
         idle_samples = int(watchdog.get("idle_samples") or 0)
         state = "running"

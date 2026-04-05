@@ -248,7 +248,7 @@ def test_run_session_watchdog_emits_stalled_event(xdg_runtime, monkeypatch):
     ]
 
 
-def test_run_session_watchdog_emits_completed_when_codex_returns_to_input_surface(xdg_runtime, monkeypatch):
+def test_run_session_watchdog_waits_for_native_completed_when_codex_returns_to_input_surface(xdg_runtime, monkeypatch):
     clock = FakeClock()
     backend.save_meta(
         "demo-session",
@@ -340,6 +340,7 @@ def test_run_session_watchdog_emits_completed_when_codex_returns_to_input_surfac
         ]
     )
     emitted = []
+    sleep_calls = []
 
     def fake_sample(session: str, *, pane_id: str = ""):
         try:
@@ -369,38 +370,22 @@ def test_run_session_watchdog_emits_completed_when_codex_returns_to_input_surfac
                 "tail": "DEBUG_TOKEN_456",
             }
 
-    def fake_emit(
-        session: str,
-        *,
-        event: str,
-        summary: str,
-        status: str,
-        turn_id: str = "",
-        cwd: str = "",
-        source: str = "",
-        tail_text: str = "",
-    ):
-        emitted.append(
-            {
-                "session": session,
-                "event": event,
-                "summary": summary,
-                "status": status,
-                "turn_id": turn_id,
-                "cwd": cwd,
-                "source": source,
-                "tail_text": tail_text,
-            }
-        )
-        meta = backend.load_meta(session)
-        meta.pop("pending_turn", None)
-        backend.save_meta(session, meta)
+    def fake_emit(*args, **kwargs):
+        emitted.append((args, kwargs))
         return True
+
+    def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        clock.sleep(seconds)
+        if len(sleep_calls) == 1:
+            meta = backend.load_meta("demo-session")
+            meta.pop("pending_turn", None)
+            backend.save_meta("demo-session", meta)
 
     monkeypatch.setattr(backend, "sample_watchdog_state", fake_sample)
     monkeypatch.setattr(backend, "emit_internal_notify", fake_emit)
     monkeypatch.setattr(backend.time, "time", clock.time)
-    monkeypatch.setattr(backend.time, "sleep", clock.sleep)
+    monkeypatch.setattr(backend.time, "sleep", fake_sleep)
 
     result = backend.run_session_watchdog(
         "demo-session",
@@ -411,21 +396,10 @@ def test_run_session_watchdog_emits_completed_when_codex_returns_to_input_surfac
     )
 
     assert result == "completed"
-    assert emitted == [
-        {
-            "session": "demo-session",
-            "event": "completed",
-            "summary": "DEBUG_TOKEN_456",
-            "status": "success",
-            "turn_id": "turn-complete-1",
-            "cwd": "/repo",
-            "source": "watchdog",
-            "tail_text": "",
-        }
-    ]
+    assert emitted == []
 
 
-def test_run_session_watchdog_ignores_transient_codex_progress_before_real_output(xdg_runtime, monkeypatch):
+def test_run_session_watchdog_does_not_emit_completed_from_codex_surface_after_real_output(xdg_runtime, monkeypatch):
     clock = FakeClock()
     backend.save_meta(
         "demo-session",
@@ -519,6 +493,7 @@ def test_run_session_watchdog_ignores_transient_codex_progress_before_real_outpu
         ]
     )
     emitted = []
+    sleep_calls = []
 
     def fake_sample(session: str, *, pane_id: str = ""):
         try:
@@ -550,38 +525,22 @@ def test_run_session_watchdog_ignores_transient_codex_progress_before_real_outpu
                 "tail": "DEBUG_TOKEN_789",
             }
 
-    def fake_emit(
-        session: str,
-        *,
-        event: str,
-        summary: str,
-        status: str,
-        turn_id: str = "",
-        cwd: str = "",
-        source: str = "",
-        tail_text: str = "",
-    ):
-        emitted.append(
-            {
-                "session": session,
-                "event": event,
-                "summary": summary,
-                "status": status,
-                "turn_id": turn_id,
-                "cwd": cwd,
-                "source": source,
-                "tail_text": tail_text,
-            }
-        )
-        meta = backend.load_meta(session)
-        meta.pop("pending_turn", None)
-        backend.save_meta(session, meta)
+    def fake_emit(*args, **kwargs):
+        emitted.append((args, kwargs))
         return True
+
+    def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        clock.sleep(seconds)
+        if len(sleep_calls) == 1:
+            meta = backend.load_meta("demo-session")
+            meta.pop("pending_turn", None)
+            backend.save_meta("demo-session", meta)
 
     monkeypatch.setattr(backend, "sample_watchdog_state", fake_sample)
     monkeypatch.setattr(backend, "emit_internal_notify", fake_emit)
     monkeypatch.setattr(backend.time, "time", clock.time)
-    monkeypatch.setattr(backend.time, "sleep", clock.sleep)
+    monkeypatch.setattr(backend.time, "sleep", fake_sleep)
 
     result = backend.run_session_watchdog(
         "demo-session",
@@ -592,18 +551,7 @@ def test_run_session_watchdog_ignores_transient_codex_progress_before_real_outpu
     )
 
     assert result == "completed"
-    assert emitted == [
-        {
-            "session": "demo-session",
-            "event": "completed",
-            "summary": "DEBUG_TOKEN_789",
-            "status": "success",
-            "turn_id": "turn-complete-2",
-            "cwd": "/repo",
-            "source": "watchdog",
-            "tail_text": "",
-        }
-    ]
+    assert emitted == []
 
 
 def test_watchdog_summary_ignores_wrapped_prompt_fragments():
@@ -627,7 +575,7 @@ def test_watchdog_summary_ignores_wrapped_prompt_fragments():
     assert needs_input == "Agent has been idle for an extended period and likely needs input"
 
 
-def test_run_session_watchdog_emits_completed_when_claude_returns_to_input_surface(xdg_runtime, monkeypatch):
+def test_run_session_watchdog_waits_for_native_completed_when_claude_returns_to_input_surface(xdg_runtime, monkeypatch):
     clock = FakeClock()
     backend.save_meta(
         "demo-session",
@@ -695,6 +643,7 @@ def test_run_session_watchdog_emits_completed_when_claude_returns_to_input_surfa
         ]
     )
     emitted = []
+    sleep_calls = []
 
     def fake_sample(session: str, *, pane_id: str = ""):
         try:
@@ -723,38 +672,22 @@ def test_run_session_watchdog_emits_completed_when_claude_returns_to_input_surfa
                 "tail": "DEBUG_CLAUDE_TOKEN",
             }
 
-    def fake_emit(
-        session: str,
-        *,
-        event: str,
-        summary: str,
-        status: str,
-        turn_id: str = "",
-        cwd: str = "",
-        source: str = "",
-        tail_text: str = "",
-    ):
-        emitted.append(
-            {
-                "session": session,
-                "event": event,
-                "summary": summary,
-                "status": status,
-                "turn_id": turn_id,
-                "cwd": cwd,
-                "source": source,
-                "tail_text": tail_text,
-            }
-        )
-        meta = backend.load_meta(session)
-        meta.pop("pending_turn", None)
-        backend.save_meta(session, meta)
+    def fake_emit(*args, **kwargs):
+        emitted.append((args, kwargs))
         return True
+
+    def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        clock.sleep(seconds)
+        if len(sleep_calls) == 1:
+            meta = backend.load_meta("demo-session")
+            meta.pop("pending_turn", None)
+            backend.save_meta("demo-session", meta)
 
     monkeypatch.setattr(backend, "sample_watchdog_state", fake_sample)
     monkeypatch.setattr(backend, "emit_internal_notify", fake_emit)
     monkeypatch.setattr(backend.time, "time", clock.time)
-    monkeypatch.setattr(backend.time, "sleep", clock.sleep)
+    monkeypatch.setattr(backend.time, "sleep", fake_sleep)
 
     result = backend.run_session_watchdog(
         "demo-session",
@@ -765,18 +698,7 @@ def test_run_session_watchdog_emits_completed_when_claude_returns_to_input_surfa
     )
 
     assert result == "completed"
-    assert emitted == [
-        {
-            "session": "demo-session",
-            "event": "completed",
-            "summary": "DEBUG_CLAUDE_TOKEN",
-            "status": "success",
-            "turn_id": "turn-claude-complete-1",
-            "cwd": "/repo",
-            "source": "watchdog",
-            "tail_text": "",
-        }
-    ]
+    assert emitted == []
 
 
 def test_latest_turn_summary_retries_until_claude_completion_surface_appears(xdg_runtime, monkeypatch):

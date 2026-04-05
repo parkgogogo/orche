@@ -704,12 +704,14 @@ def notify_internal_command(
                 channel_id=resolved_channel_id,
             )
             return
-        if not claim_turn_notification(
+        event_source = str(event.metadata.get("source") or "hook")
+        bypass_dedup = event.event == "completed" and event_source == "hook"
+        if not bypass_dedup and not claim_turn_notification(
             event.session,
             event.event,
             turn_id=str(event.metadata.get("turn_id") or ""),
             prompt=str(event.metadata.get("input_message") or ""),
-            source=str(event.metadata.get("source") or "hook"),
+            source=event_source,
             status=event.status,
             summary=event.summary,
             notification_key=str(event.metadata.get("notification_key") or ""),
@@ -720,6 +722,8 @@ def notify_internal_command(
                 reason="duplicate",
                 session=resolved_session or event.session,
                 notify_event=event.event,
+                source=event_source,
+                turn_id=str(event.metadata.get("turn_id") or ""),
             )
             return
         if event.event == "completed":
@@ -738,6 +742,17 @@ def notify_internal_command(
             service=service,
         )
         if not results:
+            if bypass_dedup:
+                console.print("notify skipped: no notifier routes resolved")
+                log_event(
+                    "notify.skipped",
+                    reason="no-routes",
+                    session=resolved_session or event.session,
+                    channel_id=resolved_channel_id,
+                    source=event_source,
+                    turn_id=str(event.metadata.get("turn_id") or ""),
+                )
+                return
             release_turn_notification(
                 event.session,
                 event.event,
@@ -772,8 +787,10 @@ def notify_internal_command(
                 detail=result.detail,
                 session=resolved_session or event.session,
                 channel_id=result.target or resolved_channel_id,
+                source=event_source,
+                turn_id=str(event.metadata.get("turn_id") or ""),
             )
-        if has_failure and not has_success:
+        if has_failure and not has_success and not bypass_dedup:
             release_turn_notification(
                 event.session,
                 event.event,
