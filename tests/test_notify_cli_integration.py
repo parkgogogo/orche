@@ -315,3 +315,61 @@ def test_notify_hidden_command_native_completed_finalizes_pending_turn_and_stops
     assert "pending_turn" not in meta
     assert meta["last_completed_turn"]["summary"] == "Done"
     assert "completed" in meta["last_completed_turn"]["notifications"]
+
+
+def test_notify_hidden_command_native_completed_matches_pending_prompt_when_turn_id_differs(xdg_runtime, monkeypatch):
+    fake_client = FakeHTTPClient()
+    monkeypatch.setattr("notify.discord.UrllibHTTPClient", StubHTTPClientFactory(fake_client))
+    write_runtime_config(
+        xdg_runtime["config_path"],
+        {
+            "notify_enabled": True,
+            "discord_bot_token": "bot-token",
+            "session": "repo-codex-main",
+            "cwd": "/tmp/repo",
+        },
+    )
+
+    from backend import save_meta, load_meta
+
+    save_meta(
+        "repo-codex-main",
+        {
+            "session": "repo-codex-main",
+            "cwd": "/tmp/repo",
+            "agent": "codex",
+            "pane_id": "%1",
+            "notify_binding": {
+                "provider": "discord",
+                "target": "1111111111",
+                "session": "agent:main:discord:channel:1111111111",
+            },
+            "pending_turn": {
+                "turn_id": "orche-turn-1",
+                "prompt": "只回复 OK",
+                "submitted_at": 1.0,
+                "pane_id": "%1",
+                "notifications": {},
+                "watchdog": {
+                    "pid": 4242,
+                },
+            },
+        },
+    )
+
+    killed = []
+    monkeypatch.setattr("backend.process_is_alive", lambda pid: pid == 4242)
+    monkeypatch.setattr("backend.os.kill", lambda pid, sig: killed.append((pid, sig)))
+
+    result = CliRunner().invoke(
+        app,
+        ["notify-internal", "--session", "repo-codex-main"],
+        input='{"type":"agent-turn-complete","thread-id":"thread-1","turn-id":"codex-turn-9","last-assistant-message":"OK","input-messages":["只回复 OK"]}',
+    )
+
+    assert result.exit_code == 0
+    meta = load_meta("repo-codex-main")
+    assert "pending_turn" not in meta
+    assert meta["last_completed_turn"]["summary"] == "OK"
+    assert meta["last_completed_turn"]["notifications"]["completed"]["summary"] == "OK"
+    assert killed == [(4242, signal.SIGTERM)]

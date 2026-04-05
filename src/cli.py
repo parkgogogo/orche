@@ -726,6 +726,7 @@ def notify_internal_command(
                 event.session,
                 summary=event.summary,
                 turn_id=str(event.metadata.get("turn_id") or ""),
+                prompt=str(event.metadata.get("input_message") or ""),
             )
         service = NotificationService()
         results = dispatch_event(

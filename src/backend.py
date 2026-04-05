@@ -1854,6 +1854,7 @@ def complete_pending_turn(
     *,
     summary: str = "",
     turn_id: str = "",
+    prompt: str = "",
     completed_at: float | None = None,
 ) -> Dict[str, Any]:
     finished_at = completed_at if completed_at is not None else time.time()
@@ -1863,7 +1864,13 @@ def complete_pending_turn(
         if not pending_turn:
             return {}
         pending_turn_id = str(pending_turn.get("turn_id") or "")
-        if turn_id and pending_turn_id and pending_turn_id != str(turn_id):
+        pending_prompt = str(pending_turn.get("prompt") or "")
+        if (
+            turn_id
+            and pending_turn_id
+            and pending_turn_id != str(turn_id)
+            and (not prompt or pending_prompt != str(prompt))
+        ):
             return {}
         watchdog = pending_turn.get("watchdog") if isinstance(pending_turn.get("watchdog"), dict) else {}
         pid = int(watchdog.get("pid") or 0) if str(watchdog.get("pid") or "").isdigit() else 0

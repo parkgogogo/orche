@@ -483,6 +483,31 @@ def test_build_message_from_payload_supports_codex_hyphenated_notify_fields():
     assert message.session == "thread-1"
     assert message.summary == "Done"
     assert message.metadata["turn_id"] == "turn-1"
+    assert message.metadata["input_message"] == ""
+
+
+def test_build_message_from_payload_reads_codex_input_messages():
+    message = build_message_from_payload(
+        '{"type":"agent-turn-complete","thread-id":"thread-1","turn-id":"turn-1","cwd":"/repo","last-assistant-message":"Done","input-messages":["first","second"]}',
+        notify_config=NotifyConfig(discord=DiscordNotifyConfig(mention_user_id="")),
+        runtime_config={},
+        summary_loader=lambda session: "",
+    )
+
+    assert message is not None
+    assert message.metadata["input_message"] == "second"
+
+
+def test_build_message_from_payload_skips_empty_input_messages_and_falls_back():
+    message = build_message_from_payload(
+        '{"type":"agent-turn-complete","thread-id":"thread-1","turn-id":"turn-1","cwd":"/repo","last-assistant-message":"Done","input-messages":["", ""],"messages":["fallback"]}',
+        notify_config=NotifyConfig(discord=DiscordNotifyConfig(mention_user_id="")),
+        runtime_config={},
+        summary_loader=lambda session: "",
+    )
+
+    assert message is not None
+    assert message.metadata["input_message"] == "fallback"
 
 
 def test_build_message_from_payload_returns_none_for_invalid_payload_text():

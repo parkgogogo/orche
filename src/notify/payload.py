@@ -302,6 +302,25 @@ def _payload_turn_id(payload: Mapping[str, Any]) -> str:
     )
 
 
+def _payload_input_message(payload: Mapping[str, Any]) -> str:
+    candidates = (
+        payload.get("input_messages"),
+        payload.get("input-messages"),
+        payload.get("inputMessages"),
+        payload.get("messages"),
+        _payload_value(payload, ("payload", "input_messages")),
+        _payload_value(payload, ("payload", "input-messages")),
+        _payload_value(payload, ("payload", "inputMessages")),
+    )
+    for candidate in candidates:
+        if isinstance(candidate, list):
+            for item in reversed(candidate):
+                text = _first_string(item)
+                if text:
+                    return text
+    return ""
+
+
 def _payload_source(payload: Mapping[str, Any]) -> str:
     return _first_string(
         payload.get("source"),
@@ -398,6 +417,7 @@ def build_message_from_payload(
         status=normalized_status,
         metadata={
             "turn_id": _payload_turn_id(payload),
+            "input_message": _payload_input_message(payload),
             "source": _payload_source(payload),
             "tail_text": _payload_tail_text(payload),
             "tail_lines": _payload_tail_lines(payload),
