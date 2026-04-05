@@ -1563,14 +1563,30 @@ def ensure_native_session(
     return pane_id
 
 
-def _current_turn_entry(meta: Mapping[str, Any], turn_id: str = "") -> Tuple[str, Dict[str, Any]]:
+def _turn_matches(turn: Mapping[str, Any], *, turn_id: str = "", prompt: str = "") -> bool:
+    if turn_id and str(turn.get("turn_id") or "") == str(turn_id):
+        return True
+    if prompt and str(turn.get("prompt") or "") == str(prompt):
+        return True
+    return False
+
+
+def _current_turn_entry(
+    meta: Mapping[str, Any],
+    turn_id: str = "",
+    *,
+    prompt: str = "",
+    allow_fallback: bool = True,
+) -> Tuple[str, Dict[str, Any]]:
     pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else None
     last_completed_turn = meta.get("last_completed_turn") if isinstance(meta.get("last_completed_turn"), dict) else None
-    if turn_id:
-        if pending_turn and str(pending_turn.get("turn_id") or "") == turn_id:
+    if turn_id or prompt:
+        if pending_turn and _turn_matches(pending_turn, turn_id=turn_id, prompt=prompt):
             return "pending_turn", dict(pending_turn)
-        if last_completed_turn and str(last_completed_turn.get("turn_id") or "") == turn_id:
+        if last_completed_turn and _turn_matches(last_completed_turn, turn_id=turn_id, prompt=prompt):
             return "last_completed_turn", dict(last_completed_turn)
+        if not allow_fallback:
+            return "", {}
     if pending_turn:
         return "pending_turn", dict(pending_turn)
     if last_completed_turn:
@@ -1583,6 +1599,7 @@ def claim_turn_notification(
     event: str,
     *,
     turn_id: str = "",
+    prompt: str = "",
     source: str = "",
     status: str = "",
     summary: str = "",
@@ -1593,7 +1610,13 @@ def claim_turn_notification(
         return True
     with session_lock(session):
         meta = load_meta(session)
-        turn_key, turn = _current_turn_entry(meta, turn_id=turn_id)
+        strict_match = str(event or "").strip().lower() == "completed" and bool(turn_id or prompt)
+        turn_key, turn = _current_turn_entry(
+            meta,
+            turn_id=turn_id,
+            prompt=prompt,
+            allow_fallback=not strict_match,
+        )
         if not turn_key or not turn:
             return True
         notifications = turn.get("notifications")
@@ -1618,6 +1641,7 @@ def release_turn_notification(
     event: str,
     *,
     turn_id: str = "",
+    prompt: str = "",
     notification_key: str = "",
 ) -> None:
     normalized_event = str(notification_key or event or "").strip().lower()
@@ -1625,7 +1649,13 @@ def release_turn_notification(
         return
     with session_lock(session):
         meta = load_meta(session)
-        turn_key, turn = _current_turn_entry(meta, turn_id=turn_id)
+        strict_match = str(event or "").strip().lower() == "completed" and bool(turn_id or prompt)
+        turn_key, turn = _current_turn_entry(
+            meta,
+            turn_id=turn_id,
+            prompt=prompt,
+            allow_fallback=not strict_match,
+        )
         if not turn_key or not turn:
             return
         notifications = turn.get("notifications")

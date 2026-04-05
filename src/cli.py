@@ -708,6 +708,7 @@ def notify_internal_command(
             event.session,
             event.event,
             turn_id=str(event.metadata.get("turn_id") or ""),
+            prompt=str(event.metadata.get("input_message") or ""),
             source=str(event.metadata.get("source") or "hook"),
             status=event.status,
             summary=event.summary,
@@ -741,6 +742,7 @@ def notify_internal_command(
                 event.session,
                 event.event,
                 turn_id=str(event.metadata.get("turn_id") or ""),
+                prompt=str(event.metadata.get("input_message") or ""),
                 notification_key=str(event.metadata.get("notification_key") or ""),
             )
             console.print("notify skipped: no notifier routes resolved")
@@ -776,6 +778,7 @@ def notify_internal_command(
                 event.session,
                 event.event,
                 turn_id=str(event.metadata.get("turn_id") or ""),
+                prompt=str(event.metadata.get("input_message") or ""),
                 notification_key=str(event.metadata.get("notification_key") or ""),
             )
         if has_failure:

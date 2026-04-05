@@ -373,3 +373,60 @@ def test_notify_hidden_command_native_completed_matches_pending_prompt_when_turn
     assert meta["last_completed_turn"]["summary"] == "OK"
     assert meta["last_completed_turn"]["notifications"]["completed"]["summary"] == "OK"
     assert killed == [(4242, signal.SIGTERM)]
+
+
+def test_notify_hidden_command_new_completed_does_not_deduplicate_against_old_last_turn(xdg_runtime, monkeypatch):
+    fake_client = FakeHTTPClient()
+    monkeypatch.setattr("notify.discord.UrllibHTTPClient", StubHTTPClientFactory(fake_client))
+    write_runtime_config(
+        xdg_runtime["config_path"],
+        {
+            "notify_enabled": True,
+            "discord_bot_token": "bot-token",
+            "session": "repo-codex-main",
+            "cwd": "/tmp/repo",
+        },
+    )
+
+    from backend import save_meta
+
+    save_meta(
+        "repo-codex-main",
+        {
+            "session": "repo-codex-main",
+            "cwd": "/tmp/repo",
+            "agent": "codex",
+            "pane_id": "%1",
+            "notify_binding": {
+                "provider": "discord",
+                "target": "1111111111",
+                "session": "agent:main:discord:channel:1111111111",
+            },
+            "last_completed_turn": {
+                "turn_id": "orche-turn-old",
+                "prompt": "old prompt",
+                "submitted_at": 1.0,
+                "pane_id": "%1",
+                "notifications": {
+                    "completed": {
+                        "at": 1.0,
+                        "source": "hook",
+                        "status": "success",
+                        "summary": "Old",
+                    }
+                },
+                "summary": "Old",
+                "completed_at": 2.0,
+            },
+        },
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["notify-internal", "--session", "repo-codex-main"],
+        input='{"type":"agent-turn-complete","thread-id":"thread-1","turn-id":"codex-turn-9","last-assistant-message":"New","input-messages":["new prompt"]}',
+    )
+
+    assert result.exit_code == 0
+    assert "notify ok: provider=discord detail=200" in result.output
+    assert len(fake_client.requests) == 1

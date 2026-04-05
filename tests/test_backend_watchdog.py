@@ -64,6 +64,68 @@ def test_claim_turn_notification_deduplicates_same_notification_key(xdg_runtime)
     )
 
 
+def test_claim_turn_notification_does_not_deduplicate_completed_against_unmatched_last_turn(xdg_runtime):
+    backend.save_meta(
+        "demo-session",
+        {
+            "session": "demo-session",
+            "last_completed_turn": {
+                "turn_id": "turn-1",
+                "prompt": "old prompt",
+                "notifications": {
+                    "completed": {
+                        "source": "hook",
+                    }
+                },
+            },
+        },
+    )
+
+    assert (
+        backend.claim_turn_notification(
+            "demo-session",
+            "completed",
+            turn_id="codex-turn-2",
+            prompt="new prompt",
+            source="hook",
+        )
+        is True
+    )
+
+    meta = backend.load_meta("demo-session")
+    assert meta["last_completed_turn"]["turn_id"] == "turn-1"
+    assert meta["last_completed_turn"]["notifications"] == {"completed": {"source": "hook"}}
+
+
+def test_claim_turn_notification_deduplicates_completed_against_matching_last_turn_prompt(xdg_runtime):
+    backend.save_meta(
+        "demo-session",
+        {
+            "session": "demo-session",
+            "last_completed_turn": {
+                "turn_id": "turn-1",
+                "prompt": "same prompt",
+                "notifications": {
+                    "completed": {
+                        "source": "hook",
+                    }
+                },
+            },
+        },
+    )
+
+    assert (
+        backend.claim_turn_notification(
+            "demo-session",
+            "completed",
+            turn_id="codex-turn-9",
+            prompt="same prompt",
+            source="hook",
+        )
+        is False
+    )
+
+
 def test_run_session_watchdog_emits_stalled_event(xdg_runtime, monkeypatch):
     clock = FakeClock()
     backend.save_meta(
