@@ -257,7 +257,6 @@ def _assistant_message_from_transcript(payload: Mapping[str, Any], *, wait_secon
         if time.monotonic() >= deadline:
             return ""
         time.sleep(0.25)
-    return ""
 
 
 def _payload_session(payload: Mapping[str, Any]) -> str:
@@ -266,11 +265,13 @@ def _payload_session(payload: Mapping[str, Any]) -> str:
         payload.get("session_id"),
         payload.get("sessionId"),
         payload.get("thread_id"),
+        payload.get("thread-id"),
         payload.get("threadId"),
         _payload_value(payload, ("payload", "session")),
         _payload_value(payload, ("payload", "session_id")),
         _payload_value(payload, ("payload", "sessionId")),
         _payload_value(payload, ("payload", "thread_id")),
+        _payload_value(payload, ("payload", "thread-id")),
         _payload_value(payload, ("payload", "threadId")),
     )
 
@@ -282,10 +283,13 @@ def _payload_cwd(payload: Mapping[str, Any]) -> str:
 def _payload_turn_id(payload: Mapping[str, Any]) -> str:
     return _first_string(
         payload.get("turn_id"),
+        payload.get("turn-id"),
         payload.get("turnId"),
         _payload_value(payload, ("metadata", "turn_id")),
+        _payload_value(payload, ("metadata", "turn-id")),
         _payload_value(payload, ("metadata", "turnId")),
         _payload_value(payload, ("payload", "turn_id")),
+        _payload_value(payload, ("payload", "turn-id")),
         _payload_value(payload, ("payload", "turnId")),
     )
 
@@ -329,6 +333,15 @@ def _default_summary_for_event(event_name: str, notify_config: NotifyConfig) -> 
     return notify_config.default_message_prefix
 
 
+def _normalize_event_status(event_name: str, status: str) -> str:
+    normalized = status.strip().lower() or "success"
+    if normalized != "warning":
+        return normalized
+    if event_name in {"stalled", "needs-input", "startup-blocked"}:
+        return event_name
+    return normalized
+
+
 def build_message_from_payload(
     payload_text: str,
     *,
@@ -360,7 +373,7 @@ def build_message_from_payload(
         max_chars=notify_config.summary_max_chars,
     )
     summary = assistant_summary or _default_summary_for_event(event_name, notify_config)
-    normalized_status = status.strip().lower() or "success"
+    normalized_status = _normalize_event_status(event_name, status)
     return NotifyEvent(
         event=event_name or "completed",
         summary=summary,

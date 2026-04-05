@@ -75,14 +75,14 @@ def test_tmux_bridge_notifier_appends_recent_output(monkeypatch):
             summary="Codex startup blocked",
             session="source",
             cwd="/tmp/repo",
-            status="warning",
+            status="startup-blocked",
             metadata={"tail_text": "line1\nline2"},
         ),
         ResolvedRoute(provider="tmux-bridge", target="target-session"),
     )
 
     assert captured == [
-        "orche notify\nsource session: source\nevent: startup-blocked\nstatus: warning\ncwd: /tmp/repo\n\nCodex startup blocked\n\nRecent output:\nline1\nline2"
+        "orche notify\nsource session: source\nevent: startup-blocked\nstatus: startup-blocked\ncwd: /tmp/repo\n\nCodex startup blocked\n\nRecent output:\nline1\nline2"
     ]
 
 

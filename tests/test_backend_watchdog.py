@@ -177,7 +177,7 @@ def test_run_session_watchdog_emits_stalled_event(xdg_runtime, monkeypatch):
             "session": "demo-session",
             "event": "stalled",
             "summary": "working",
-            "status": "warning",
+            "status": "stalled",
             "turn_id": "turn-1",
             "cwd": "/repo",
             "source": "watchdog",
@@ -978,7 +978,7 @@ def test_run_session_watchdog_emits_periodic_reminder_after_last_notify(xdg_runt
             "Session demo-session is still in stalled state and has gone 10 minutes without a successful notify. "
             "The agent session has shown no visible progress for an extended period. To reconnect with it, run "
             "`orche status demo-session` and `orche read demo-session --lines 120`.",
-            "warning",
+            "stalled",
             "turn-3",
             "/repo",
             "watchdog",

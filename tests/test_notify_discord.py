@@ -131,7 +131,7 @@ def test_discord_notifier_appends_recent_output(fake_http_client):
             summary="Codex startup blocked",
             session="demo",
             cwd="/tmp/repo",
-            status="warning",
+            status="startup-blocked",
             metadata={"tail_text": "line1\nline2"},
         ),
         ResolvedRoute(provider="discord", target="123"),
@@ -139,5 +139,5 @@ def test_discord_notifier_appends_recent_output(fake_http_client):
 
     assert (
         fake_http_client.requests[0]["json_body"]["content"]
-        == "[warning] Codex startup blocked\ncwd: `/tmp/repo`\n\nRecent output:\nline1\nline2"
+        == "[startup-blocked] Codex startup blocked\ncwd: `/tmp/repo`\n\nRecent output:\nline1\nline2"
     )

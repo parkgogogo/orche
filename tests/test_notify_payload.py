@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from notify import payload as payload_module
 from notify.config import DiscordNotifyConfig, NotifyConfig
 from notify.payload import build_message_from_payload, parse_payload, summarize_assistant_message
 
@@ -115,6 +116,71 @@ def test_build_message_from_payload_skips_unsupported_event():
     )
 
     assert message is None
+
+
+def test_assistant_message_from_transcript_returns_empty_for_missing_path():
+    result = payload_module._assistant_message_from_transcript(
+        {"transcript_path": "/tmp/orche-missing-transcript.jsonl"},
+        wait_seconds=0.0,
+    )
+
+    assert result == ""
+
+
+def test_assistant_message_from_transcript_returns_empty_on_read_error(tmp_path, monkeypatch):
+    transcript_path = tmp_path / "claude.jsonl"
+    transcript_path.write_text("{}", encoding="utf-8")
+
+    def fake_read_text(self, encoding="utf-8"):
+        raise OSError("boom")
+
+    monkeypatch.setattr(payload_module.Path, "read_text", fake_read_text)
+
+    result = payload_module._assistant_message_from_transcript(
+        {"transcript_path": str(transcript_path)},
+        wait_seconds=0.0,
+    )
+
+    assert result == ""
+
+
+def test_assistant_message_from_transcript_skips_invalid_entries_and_times_out(tmp_path):
+    transcript_path = tmp_path / "claude.jsonl"
+    transcript_path.write_text(
+        "\n".join(
+            [
+                "",
+                "not-json",
+                json.dumps({"type": "system"}),
+                json.dumps({"type": "assistant", "message": "plain-string"}),
+                json.dumps({"type": "assistant", "message": {"content": "plain-string"}}),
+                json.dumps({"type": "assistant", "message": {"content": ["plain-string"]}}),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {"type": "text", "text": ""},
+                            ]
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = payload_module._assistant_message_from_transcript(
+        {"transcript_path": str(transcript_path)},
+        wait_seconds=0.0,
+    )
+
+    assert result == ""
+
+
+def test_normalize_event_status_keeps_warning_for_other_events():
+    assert payload_module._normalize_event_status("completed", "warning") == "warning"
 
 
 def test_build_message_from_payload_does_not_require_route_target():
@@ -309,7 +375,7 @@ def test_build_message_from_payload_reads_watchdog_metadata_and_event_aliases():
 
     assert message is not None
     assert message.event == "needs-input"
-    assert message.status == "warning"
+    assert message.status == "needs-input"
     assert message.summary == "Agent likely needs input"
     assert message.metadata["turn_id"] == "turn-1"
     assert message.metadata["source"] == "watchdog"
@@ -326,6 +392,7 @@ def test_build_message_from_payload_reads_startup_blocked_tail_metadata():
 
     assert message is not None
     assert message.event == "startup-blocked"
+    assert message.status == "startup-blocked"
     assert message.summary == "Agent startup blocked"
     assert message.metadata["source"] == "startup"
     assert message.metadata["tail_text"] == "line1\nline2"
@@ -355,7 +422,36 @@ def test_build_message_from_payload_uses_stalled_default_summary():
     )
 
     assert message is not None
+    assert message.status == "stalled"
     assert message.summary == "Agent turn stalled"
+
+
+def test_build_message_from_payload_uses_summary_loader_for_non_completed_events():
+    message = build_message_from_payload(
+        '{"event":"failed","summary":"   ","session":"demo"}',
+        notify_config=NotifyConfig(discord=DiscordNotifyConfig(mention_user_id="")),
+        runtime_config={},
+        summary_loader=lambda session: "Loaded summary",
+        status="failure",
+    )
+
+    assert message is not None
+    assert message.summary == "Loaded summary"
+
+
+def test_build_message_from_payload_supports_codex_hyphenated_notify_fields():
+    message = build_message_from_payload(
+        '{"type":"agent-turn-complete","thread-id":"thread-1","turn-id":"turn-1","cwd":"/repo","last-assistant-message":"Done"}',
+        notify_config=NotifyConfig(discord=DiscordNotifyConfig(mention_user_id="")),
+        runtime_config={},
+        summary_loader=lambda session: "",
+    )
+
+    assert message is not None
+    assert message.event == "completed"
+    assert message.session == "thread-1"
+    assert message.summary == "Done"
+    assert message.metadata["turn_id"] == "turn-1"
 
 
 def test_build_message_from_payload_returns_none_for_invalid_payload_text():

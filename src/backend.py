@@ -1741,8 +1741,8 @@ def _watchdog_summary_for_event(
 def _watchdog_event_status(event: str) -> str:
     if event == "failed":
         return "failure"
-    if event in {"stalled", "needs-input"}:
-        return "warning"
+    if event in {"stalled", "needs-input", "startup-blocked"}:
+        return event
     return "success"
 
 
@@ -1992,7 +1992,7 @@ def run_session_watchdog(
                 session,
                 event="reminder",
                 summary=_watchdog_reminder_summary(session, state),
-                status="warning",
+                status=_watchdog_event_status(state),
                 turn_id=turn_id,
                 cwd=str(meta.get("cwd") or ""),
                 source="watchdog",
