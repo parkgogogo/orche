@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.18 - 2026-04-05
+
+- Fix Codex notify payload parsing for current `codex-cli` hook payloads that send hyphenated fields such as `thread-id` and `turn-id`.
+- Align Discord and tmux notify status labels with native worker states so `stalled` and `needs-input` no longer collapse to generic `warning`.
+- Add regression coverage for watchdog reminder status mapping and current Codex notify payload compatibility.
+
 ## v0.4.10 - 2026-04-04
 
 - Avoid tmux window creation failures like `index 0 in use` by explicitly targeting the next available window index when opening new `orche` windows.
