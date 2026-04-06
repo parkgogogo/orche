@@ -16,7 +16,7 @@ Do not use this skill for agent-to-agent reviewer/worker loops inside tmux. That
 ## Non-Negotiable Rules
 
 - Treat `notify` as the return path. If the worker must report back, open it with explicit `--notify discord:<channel-id>`.
-- Treat `prompt` as fire-and-forget. After `orche prompt`, return to your own work unless you actually need inspection or takeover.
+- Treat `prompt` as fire-and-forget. After `orche prompt`, do not keep the current turn open just to watch the worker.
 - Do not poll by default. Only inspect a worker if the user asked for progress, the worker likely needs input, or you need details for the next decision.
 - Use managed sessions for delegated work. A delegated worker that must report back is not a native session.
 - Do not invent routing. If you do not know the Discord channel id, stop and get it from the user or established context.
@@ -46,8 +46,15 @@ orche open --cwd /repo --agent codex --name repo-worker --notify discord:1234567
 # 2. send work
 orche prompt repo-worker "analyze the failing tests and propose a fix"
 
-# 3. return to your own turn
+# 3. end the current turn unless you have unrelated work that does not depend on the worker
 ```
+
+Default behavior after `prompt`:
+
+- do not busy-wait
+- do not keep the turn alive just to monitor output
+- if you have no independent work left, end the current turn immediately
+- when the worker reports back through `notify`, that notify becomes the next input to the supervisor loop
 
 Later, inspect only if needed:
 
@@ -71,6 +78,7 @@ Rules:
 - use `discord:<channel-id>` as the notify target
 - do not default to tmux routing in this skill
 - do not assume global Discord config is enough by itself; the session still needs explicit notify binding
+- rely on notify to resume the loop; do not keep the current turn open solely to wait for the worker
 - changing the notify target means opening a new session, not mutating the existing one
 - do not combine raw agent CLI args after `--` with `--notify`
 
@@ -130,6 +138,7 @@ Avoid these:
 
 - opening a worker without `--notify` when the result must return to OpenClaw
 - polling continuously after `prompt`
+- keeping the current turn open only to watch the worker instead of ending it and waiting for notify
 - attaching to every worker when `status` or `read` would be enough
 - using `input` for normal task delegation
 - combining raw agent args with `--notify`

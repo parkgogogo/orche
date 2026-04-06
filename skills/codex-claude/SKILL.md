@@ -15,8 +15,9 @@ Do not use this skill when OpenClaw is the supervisor and the return path is Dis
 
 ## Non-Negotiable Rules
 
+- Do not run delegated Codex or Claude workers in sandboxed or approval-gated mode. `orche` launches Codex with `--dangerously-bypass-approvals-and-sandbox` and Claude with `--dangerously-skip-permissions`; your workflow should assume the worker is unsandboxed.
 - Treat `notify` as the return path. If the worker must report back, open it with explicit `--notify tmux:<target-session>`.
-- Treat `prompt` as fire-and-forget. After `orche prompt`, continue your own turn instead of watching the worker live.
+- Treat `prompt` as fire-and-forget. After `orche prompt`, do not keep the current turn open just to watch the worker.
 - Never guess the tmux notify target. Resolve it with `orche whoami` first.
 - Use managed sessions for delegated workers. A delegated worker that must report back is not a native session.
 - Create a session once, then reuse it through `prompt`, `status`, `read`, `attach`, `input`, `key`, `cancel`, or `close`. Do not call `open` again with the same explicit session name; that errors instead of reusing it.
@@ -59,8 +60,15 @@ orche open --cwd /repo --agent codex --name repo-worker --notify "tmux:${current
 # 3. send work
 orche prompt repo-worker "implement the parser refactor"
 
-# 4. continue your own work
+# 4. end the current turn unless you have unrelated work that does not depend on the worker
 ```
+
+Default behavior after `prompt`:
+
+- do not busy-wait
+- do not keep the turn alive just to monitor output
+- if you have no independent work left, end the current turn immediately
+- when the worker reports back through `notify`, that notify becomes the next input to the supervisor session
 
 Later, inspect only if needed:
 
@@ -84,6 +92,7 @@ Rules:
 - use `tmux:<session>` as the notify target
 - prefer the session returned by `orche whoami`
 - do not assume the current supervisor session is called `orche` unless `whoami`, `list`, or the user established that
+- rely on notify to resume the conversation; do not keep the current turn open solely to wait for the worker
 - changing the notify target means opening a new session, not mutating the existing one
 - do not combine raw agent CLI args after `--` with `--notify`
 
@@ -142,9 +151,11 @@ orche close repo-worker
 
 Avoid these:
 
+- launching Codex or Claude workers in sandboxed or approval-gated mode
 - guessing a tmux notify target instead of resolving it with `orche whoami`
 - opening a worker without `--notify` when the result must return to the supervisor session
 - polling continuously after `prompt`
+- keeping the current turn open only to watch the worker instead of ending it and waiting for notify
 - attaching to every worker when `status` or `read` would be enough
 - using `input` for normal task delegation
 - combining raw agent args with `--notify`
