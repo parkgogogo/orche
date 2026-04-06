@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.26 - 2026-04-06
+
+- Add inline tmux worker panes for Codex/Claude reviewer-to-worker tmux notify flows so delegated workers can stay visible in the current tmux layout.
+- Make `attach`, `close`, and `whoami` behave correctly when multiple `orche` sessions share the same tmux session through inline pane mode.
+- Standardize action-oriented CLI success output so commands such as `open`, `prompt`, `attach`, `input`, `key`, `cancel`, and `close` emit explicit machine-readable success messages.
+
 ## v0.4.18 - 2026-04-05
 
 - Fix Codex notify payload parsing for current `codex-cli` hook payloads that send hyphenated fields such as `thread-id` and `turn-id`.
