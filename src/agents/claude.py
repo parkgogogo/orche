@@ -187,6 +187,13 @@ class ClaudeAgent(AgentPlugin):
         prefix.append(f"exec {' '.join(shlex.quote(part) for part in command)}")
         return " && ".join(prefix)
 
+    def native_launch_args(self, *, cwd: Path, cli_args: list[str] | tuple[str, ...]) -> list[str]:
+        _ = cwd
+        args = [str(value) for value in cli_args]
+        if "--dangerously-skip-permissions" in args:
+            return args
+        return ["--dangerously-skip-permissions", *args]
+
     def matches_process(self, pane_command: str, descendant_commands: list[str]) -> bool:
         if pane_command in {"claude", "node"}:
             return True

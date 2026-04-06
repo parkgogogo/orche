@@ -117,7 +117,114 @@ def test_build_native_agent_launch_command_checks_cli_presence(xdg_runtime, tmp_
 
     assert "command -v codex" in command
     assert "orche launch error: Codex CLI not found in PATH." in command
-    assert "exec codex --model gpt-5.4" in command
+    assert (
+        f"exec codex --no-alt-screen -C {tmp_path} --dangerously-bypass-approvals-and-sandbox --model gpt-5.4"
+        in command
+    )
+
+
+def test_get_pane_info_reads_exact_target_pane(xdg_runtime, monkeypatch):
+    monkeypatch.setattr(backend, "pane_exists", lambda pane_id: pane_id == "%7")
+    monkeypatch.setattr(
+        backend,
+        "_tmux_value_for_pane",
+        lambda pane_id, fmt: (
+            "orche-reviewer\t%7\t@3\tmain\t0\t12345\tzsh\t/tmp/project\tdemo-worker"
+            if pane_id == "%7"
+            else ""
+        ),
+    )
+
+    info = backend.get_pane_info("%7")
+
+    assert info == {
+        "session_name": "orche-reviewer",
+        "pane_id": "%7",
+        "window_id": "@3",
+        "window_name": "main",
+        "pane_dead": "0",
+        "pane_pid": "12345",
+        "pane_current_command": "zsh",
+        "pane_current_path": "/tmp/project",
+        "pane_title": "demo-worker",
+    }
+
+
+def test_pending_turn_completion_summary_falls_back_to_full_capture_when_delta_clips_prompt():
+    plugin = backend.get_agent("codex")
+    prompt = "Reply with exactly OK42"
+    capture = (
+        "› Reply with exactly\n"
+        "  OK42\n"
+        "\n"
+        "• OK42\n"
+        "\n"
+        "› Implement {feature}\n"
+    )
+
+    summary = backend._pending_turn_completion_summary(
+        plugin,
+        pending_turn={
+            "before_capture": "› ",
+            "prompt": prompt,
+        },
+        capture=capture,
+    )
+
+    assert summary == "OK42"
+
+
+def test_run_session_watchdog_completes_turn_when_capture_shows_completion(xdg_runtime, tmp_path, monkeypatch):
+    session = "demo-inline-watchdog"
+    backend.save_meta(
+        session,
+        {
+            "session": session,
+            "cwd": str(tmp_path),
+            "agent": "codex",
+            "pane_id": "%7",
+            "pending_turn": {
+                "turn_id": "turn-1",
+                "prompt": "Reply with exactly OK42",
+                "before_capture": "› ",
+                "submitted_at": 1.0,
+                "pane_id": "%7",
+                "notifications": {},
+                "watchdog": {},
+            },
+        },
+    )
+    capture = (
+        "› Reply with exactly\n"
+        "  OK42\n"
+        "\n"
+        "• OK42\n"
+        "\n"
+        "› Implement {feature}\n"
+    )
+    emitted = []
+
+    monkeypatch.setattr(
+        backend,
+        "sample_watchdog_state",
+        lambda session, pane_id="": {
+            "capture": capture,
+            "signature": "sig",
+            "cursor_x": "1",
+            "cursor_y": "1",
+            "cpu_percent": 0.0,
+            "agent_running": True,
+        },
+    )
+    monkeypatch.setattr(backend, "emit_internal_notify", lambda *args, **kwargs: emitted.append(kwargs) or False)
+
+    result = backend.run_session_watchdog(session, turn_id="turn-1", poll_interval=0.01)
+    meta = backend.load_meta(session)
+
+    assert result == "completed"
+    assert emitted and emitted[0]["event"] == "completed"
+    assert "pending_turn" not in meta
+    assert meta["last_completed_turn"]["summary"] == "OK42"
 
 
 def test_wait_for_agent_process_start_surfaces_explicit_launch_error(monkeypatch):
@@ -129,6 +236,16 @@ def test_wait_for_agent_process_start_surfaces_explicit_launch_error(monkeypatch
     monkeypatch.setattr(backend, "is_agent_running", lambda plugin, pane_id: False)
 
     with pytest.raises(backend.OrcheError, match="Codex CLI not found in PATH"):
+        backend.wait_for_agent_process_start(plugin, "%1", timeout=0.1)
+
+
+def test_wait_for_agent_process_start_rejects_plain_shell_prompt(monkeypatch):
+    plugin = backend.get_agent("codex")
+    monkeypatch.setattr(backend, "read_pane", lambda pane_id, lines=backend.DEFAULT_CAPTURE_LINES: "dnq@host repo %")
+    monkeypatch.setattr(backend, "get_pane_info", lambda pane_id: {"pane_dead": "0"})
+    monkeypatch.setattr(backend, "is_agent_running", lambda plugin, pane_id: False)
+
+    with pytest.raises(backend.OrcheError, match="Timed out waiting for Codex process to start"):
         backend.wait_for_agent_process_start(plugin, "%1", timeout=0.1)
 
 

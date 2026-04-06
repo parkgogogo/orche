@@ -473,8 +473,24 @@ def list_panes(target: Optional[str] = None) -> List[Dict[str, str]]:
 def get_pane_info(pane_id: str) -> Optional[Dict[str, str]]:
     if not pane_exists(pane_id):
         return None
-    panes = list_panes(pane_id)
-    return panes[0] if panes else None
+    raw = _tmux_value_for_pane(
+        pane_id,
+        "#{session_name}\t#{pane_id}\t#{window_id}\t#{window_name}\t#{pane_dead}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}",
+    )
+    parts = raw.split("\t") if raw else []
+    if len(parts) != 9:
+        return None
+    return {
+        "session_name": parts[0],
+        "pane_id": parts[1],
+        "window_id": parts[2],
+        "window_name": parts[3],
+        "pane_dead": parts[4],
+        "pane_pid": parts[5],
+        "pane_current_command": parts[6],
+        "pane_current_path": parts[7],
+        "pane_title": parts[8],
+    }
 
 
 def read_pane(pane_id: str, lines: int = DEFAULT_CAPTURE_LINES) -> str:
@@ -1373,8 +1389,6 @@ def wait_for_agent_process_start(
     launch_error = extract_launch_error(last_capture)
     if launch_error:
         raise OrcheError(launch_error)
-    if last_capture.strip():
-        return pane_id
     raise OrcheError(f"Timed out waiting for {plugin.display_name} process to start in {pane_id}")
 
 
@@ -1514,7 +1528,7 @@ def build_native_agent_launch_command(
     cwd: Path,
     cli_args: Sequence[str],
 ) -> str:
-    command = [plugin.name, *[str(value) for value in cli_args]]
+    command = [plugin.name, *plugin.native_launch_args(cwd=cwd, cli_args=cli_args)]
     prefix = [f"cd {shlex.quote(str(cwd))}"]
     orche_shim = ensure_orche_shim()
     prefix.append(f"export ORCHE_BIN={shlex.quote(str(orche_shim))}")
@@ -1903,15 +1917,33 @@ def _pending_turn_completion_summary(
 ) -> str:
     before_capture = str(pending_turn.get("before_capture") or "")
     prompt = str(pending_turn.get("prompt") or "")
+    return _completion_summary_from_capture(
+        plugin,
+        capture=capture,
+        before_capture=before_capture,
+        prompt=prompt,
+    )
+
+
+def _completion_summary_from_capture(
+    plugin: AgentPlugin,
+    *,
+    capture: str,
+    before_capture: str,
+    prompt: str,
+) -> str:
     delta = turn_delta(before_capture, capture) if capture else ""
-    if not delta:
-        return ""
-    summary = plugin.extract_completion_summary(delta, prompt)
-    if summary:
-        return summary
-    if not plugin.capture_has_completion_surface(delta, prompt):
-        return ""
-    return extract_summary_candidate(delta, prompt=prompt)
+    for candidate in (delta, capture):
+        if not candidate:
+            continue
+        summary = plugin.extract_completion_summary(candidate, prompt)
+        if summary:
+            return summary
+        if plugin.capture_has_completion_surface(candidate, prompt):
+            fallback = extract_summary_candidate(candidate, prompt=prompt)
+            if fallback:
+                return fallback
+    return ""
 
 
 def _latest_notification_at(pending_turn: Mapping[str, Any]) -> float:
@@ -2085,6 +2117,40 @@ def run_session_watchdog(
             )
             return "stopped"
         sample = sample_watchdog_state(session, pane_id=str(pending_turn.get("pane_id") or meta.get("pane_id") or ""))
+        sample_capture = str(sample.get("capture") or "")
+        completion_summary = _pending_turn_completion_summary(
+            plugin,
+            pending_turn=pending_turn,
+            capture=sample_capture,
+        )
+        if completion_summary:
+            emitted = emit_internal_notify(
+                session,
+                event="completed",
+                summary=completion_summary,
+                status="success",
+                turn_id=turn_id,
+                cwd=str(meta.get("cwd") or ""),
+                source="watchdog",
+                tail_text=recent_capture_excerpt(sample_capture),
+            )
+            if not emitted:
+                complete_pending_turn(
+                    session,
+                    summary=completion_summary,
+                    turn_id=turn_id,
+                    prompt=str(pending_turn.get("prompt") or ""),
+                )
+            update_watchdog_metadata(
+                session,
+                turn_id=turn_id,
+                values={
+                    "state": "completed",
+                    "last_event": "completed",
+                    "last_event_at": time.time(),
+                },
+            )
+            return "completed"
         now = time.time()
         previous_signature = str(watchdog.get("last_signature") or "")
         previous_cursor = (
@@ -2392,10 +2458,12 @@ def latest_turn_summary(session: str) -> str:
             pane_id = str((bridge_resolve(session) or pending_turn.get("pane_id") or meta.get("pane_id") or "")).strip()
             capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES) if pane_id else ""
             before_capture = str(pending_turn.get("before_capture") or "")
-            delta = turn_delta(before_capture, capture) if capture else ""
-            summary = plugin.extract_completion_summary(delta, prompt)
-            if not summary and plugin.capture_has_completion_surface(delta, prompt):
-                summary = extract_summary_candidate(delta, prompt=prompt)
+            summary = _completion_summary_from_capture(
+                plugin,
+                capture=capture,
+                before_capture=before_capture,
+                prompt=prompt,
+            )
             if summary or time.monotonic() >= deadline:
                 break
             time.sleep(LATEST_TURN_SUMMARY_RETRY_INTERVAL)
