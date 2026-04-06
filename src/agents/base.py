@@ -58,6 +58,10 @@ class AgentPlugin(ABC):
     def capture_has_ready_surface(self, capture: str, cwd: Path) -> bool:
         raise NotImplementedError
 
+    def native_launch_args(self, *, cwd: Path, cli_args: Sequence[str]) -> list[str]:
+        _ = cwd
+        return [str(value) for value in cli_args]
+
     def extract_completion_summary(self, capture: str, prompt: str) -> str:
         _ = (capture, prompt)
         return ""

@@ -33,6 +33,7 @@ BACKEND = "tmux"
 TMUX_SESSION = "orche"
 LEGACY_TMUX_SESSION = "orche-smux"
 DEFAULT_CAPTURE_LINES = 200
+INLINE_PANE_PERCENT = 33
 STARTUP_TIMEOUT = 90.0
 WATCHDOG_CAPTURE_LINES = DEFAULT_CAPTURE_LINES
 NOTIFY_TAIL_LINES = 20
@@ -43,6 +44,7 @@ WATCHDOG_REMINDER_AFTER = 600.0
 WATCHDOG_ACTIVE_CPU_THRESHOLD = 5.0
 LATEST_TURN_SUMMARY_RETRY_SECONDS = 5.0
 LATEST_TURN_SUMMARY_RETRY_INTERVAL = 0.25
+WATCHDOG_NOTIFY_BUFFER = 10.0
 LAUNCH_ERROR_PREFIX = "orche launch error:"
 CONFIG_COMMENT = (
     "orche runtime config. session is the active orche agent session label; "
@@ -472,8 +474,24 @@ def list_panes(target: Optional[str] = None) -> List[Dict[str, str]]:
 def get_pane_info(pane_id: str) -> Optional[Dict[str, str]]:
     if not pane_exists(pane_id):
         return None
-    panes = list_panes(pane_id)
-    return panes[0] if panes else None
+    raw = _tmux_value_for_pane(
+        pane_id,
+        "#{session_name}\t#{pane_id}\t#{window_id}\t#{window_name}\t#{pane_dead}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}",
+    )
+    parts = raw.split("\t") if raw else []
+    if len(parts) != 9:
+        return None
+    return {
+        "session_name": parts[0],
+        "pane_id": parts[1],
+        "window_id": parts[2],
+        "window_name": parts[3],
+        "pane_dead": parts[4],
+        "pane_pid": parts[5],
+        "pane_current_command": parts[6],
+        "pane_current_path": parts[7],
+        "pane_title": parts[8],
+    }
 
 
 def read_pane(pane_id: str, lines: int = DEFAULT_CAPTURE_LINES) -> str:
@@ -1009,6 +1027,17 @@ def attach_session(session: str, *, pane_id: str = "") -> str:
         target_tmux_session = tmux_session_name(session)
     if not _tmux_has_session(target_tmux_session):
         raise OrcheError(f"Tmux session not found for session: {session}")
+    if (
+        str(meta.get("tmux_mode") or "").strip() == "inline-pane"
+        and os.environ.get("TMUX")
+        and _current_tmux_value("#{session_name}") == target_tmux_session
+    ):
+        target_window_id = str((info or {}).get("window_id") or meta.get("window_id") or "").strip()
+        if target_window_id:
+            tmux("select-window", "-t", target_window_id, check=False, capture=True)
+        if resolved_pane_id:
+            tmux("select-pane", "-t", resolved_pane_id, check=False, capture=True)
+        return target_tmux_session
     if os.environ.get("TMUX"):
         result = tmux("switch-client", "-t", target_tmux_session, check=False, capture=True)
         if result.returncode != 0:
@@ -1122,6 +1151,64 @@ def ensure_tmux_session(session: str, cwd: Path) -> str:
     return name
 
 
+def _pane_record_from_split_output(output: str) -> Dict[str, str]:
+    parts = (output or "").strip().split("\t")
+    if len(parts) != 4:
+        raise OrcheError("Failed to parse tmux split-window output")
+    return {
+        "session_name": parts[0],
+        "pane_id": parts[1],
+        "window_id": parts[2],
+        "window_name": parts[3],
+        "pane_dead": "0",
+        "pane_pid": "",
+        "pane_current_command": "",
+        "pane_current_path": "",
+        "pane_title": "",
+    }
+
+
+def _preferred_host_pane(*, tmux_session: str, host_pane_id: str = "", exclude_pane_id: str = "") -> str:
+    if host_pane_id and pane_exists(host_pane_id):
+        return host_pane_id
+    for pane in list_panes(tmux_session):
+        pane_id = str(pane.get("pane_id") or "").strip()
+        if not pane_id or pane_id == exclude_pane_id or str(pane.get("pane_dead") or "") == "1":
+            continue
+        return pane_id
+    raise OrcheError(f"Unable to find a live host pane in tmux session: {tmux_session}")
+
+
+def create_inline_pane(
+    session: str,
+    cwd: Path,
+    *,
+    tmux_session: str,
+    host_pane_id: str = "",
+) -> Tuple[Dict[str, str], str]:
+    resolved_host_pane = _preferred_host_pane(
+        tmux_session=tmux_session,
+        host_pane_id=host_pane_id,
+    )
+    result = tmux(
+        "split-window",
+        "-d",
+        "-h",
+        "-p",
+        str(INLINE_PANE_PERCENT),
+        "-t",
+        resolved_host_pane,
+        "-c",
+        str(cwd),
+        "-P",
+        "-F",
+        "#{session_name}\t#{pane_id}\t#{window_id}\t#{window_name}",
+        check=True,
+        capture=True,
+    )
+    return _pane_record_from_split_output(result.stdout), resolved_host_pane
+
+
 def normalize_pane(session: str, cwd: Path, pane: Dict[str, str]) -> str:
     pane_id = pane["pane_id"]
     if pane.get("pane_dead") == "1":
@@ -1131,10 +1218,21 @@ def normalize_pane(session: str, cwd: Path, pane: Dict[str, str]) -> str:
     return pane_id
 
 
-def ensure_pane(session: str, cwd: Path, agent: str) -> str:
+def ensure_pane(
+    session: str,
+    cwd: Path,
+    agent: str,
+    *,
+    tmux_mode: str = "dedicated-session",
+    host_pane_id: str = "",
+    tmux_host_session: str = "",
+) -> str:
     cwd = cwd.resolve()
     with session_lock(session):
         meta = load_meta(session)
+        resolved_tmux_mode = str(meta.get("tmux_mode") or tmux_mode or "dedicated-session").strip() or "dedicated-session"
+        resolved_host_pane_id = str(meta.get("host_pane_id") or host_pane_id or "").strip()
+        resolved_tmux_host_session = str(meta.get("tmux_host_session") or tmux_host_session or "").strip()
         pane_id = str(meta.get("pane_id") or "")
         if pane_id and pane_exists(pane_id):
             info = get_pane_info(pane_id)
@@ -1150,17 +1248,31 @@ def ensure_pane(session: str, cwd: Path, agent: str) -> str:
                         "pane_id": pane_id,
                         "window_id": info["window_id"],
                         "window_name": info["window_name"],
+                        "tmux_mode": resolved_tmux_mode,
+                        "host_pane_id": resolved_host_pane_id,
+                        "tmux_host_session": resolved_tmux_host_session,
                         "last_seen_at": time.time(),
                     }
                 )
                 save_meta(session, meta)
                 return pane_id
 
-        tmux_name = ensure_tmux_session(session, cwd)
-        panes = list_panes(tmux_name)
-        if not panes:
-            raise OrcheError(f"Failed to create tmux pane for {session}")
-        pane = panes[0]
+        if resolved_tmux_mode == "inline-pane":
+            inline_tmux_session = resolved_tmux_host_session or str(meta.get("tmux_session") or "").strip() or _current_tmux_value("#{session_name}")
+            if not inline_tmux_session:
+                raise OrcheError("Inline pane mode requires a live tmux session")
+            pane, resolved_host_pane_id = create_inline_pane(
+                session,
+                cwd,
+                tmux_session=inline_tmux_session,
+                host_pane_id=resolved_host_pane_id or _current_tmux_value("#{pane_id}"),
+            )
+        else:
+            tmux_name = ensure_tmux_session(session, cwd)
+            panes = list_panes(tmux_name)
+            if not panes:
+                raise OrcheError(f"Failed to create tmux pane for {session}")
+            pane = panes[0]
         pane_id = normalize_pane(session, cwd, pane)
         meta.update(
             {
@@ -1172,6 +1284,9 @@ def ensure_pane(session: str, cwd: Path, agent: str) -> str:
                 "pane_id": pane_id,
                 "window_id": pane["window_id"],
                 "window_name": pane["window_name"],
+                "tmux_mode": resolved_tmux_mode,
+                "host_pane_id": resolved_host_pane_id,
+                "tmux_host_session": resolved_tmux_host_session or pane["session_name"],
                 "last_seen_at": time.time(),
             }
         )
@@ -1275,8 +1390,6 @@ def wait_for_agent_process_start(
     launch_error = extract_launch_error(last_capture)
     if launch_error:
         raise OrcheError(launch_error)
-    if last_capture.strip():
-        return pane_id
     raise OrcheError(f"Timed out waiting for {plugin.display_name} process to start in {pane_id}")
 
 
@@ -1416,7 +1529,7 @@ def build_native_agent_launch_command(
     cwd: Path,
     cli_args: Sequence[str],
 ) -> str:
-    command = [plugin.name, *[str(value) for value in cli_args]]
+    command = [plugin.name, *plugin.native_launch_args(cwd=cwd, cli_args=cli_args)]
     prefix = [f"cd {shlex.quote(str(cwd))}"]
     orche_shim = ensure_orche_shim()
     prefix.append(f"export ORCHE_BIN={shlex.quote(str(orche_shim))}")
@@ -1783,6 +1896,20 @@ def _watchdog_event_status(event: str) -> str:
     return "success"
 
 
+def _should_use_inline_pane(notify_binding: Mapping[str, Any]) -> Tuple[bool, str, str]:
+    if str(notify_binding.get("provider") or "").strip() != "tmux-bridge":
+        return False, "", ""
+    current_tmux_session = _current_tmux_value("#{session_name}")
+    current_pane_id = _current_tmux_value("#{pane_id}")
+    if not current_tmux_session or not current_pane_id:
+        return False, "", ""
+    with contextlib.suppress(Exception):
+        current_session = current_session_id()
+        if current_session and str(notify_binding.get("target") or "").strip() == current_session:
+            return True, current_tmux_session, current_pane_id
+    return False, "", ""
+
+
 def _pending_turn_completion_summary(
     plugin: AgentPlugin,
     *,
@@ -1791,15 +1918,33 @@ def _pending_turn_completion_summary(
 ) -> str:
     before_capture = str(pending_turn.get("before_capture") or "")
     prompt = str(pending_turn.get("prompt") or "")
+    return _completion_summary_from_capture(
+        plugin,
+        capture=capture,
+        before_capture=before_capture,
+        prompt=prompt,
+    )
+
+
+def _completion_summary_from_capture(
+    plugin: AgentPlugin,
+    *,
+    capture: str,
+    before_capture: str,
+    prompt: str,
+) -> str:
     delta = turn_delta(before_capture, capture) if capture else ""
-    if not delta:
-        return ""
-    summary = plugin.extract_completion_summary(delta, prompt)
-    if summary:
-        return summary
-    if not plugin.capture_has_completion_surface(delta, prompt):
-        return ""
-    return extract_summary_candidate(delta, prompt=prompt)
+    for candidate in (delta, capture):
+        if not candidate:
+            continue
+        summary = plugin.extract_completion_summary(candidate, prompt)
+        if summary:
+            return summary
+        if plugin.capture_has_completion_surface(candidate, prompt):
+            fallback = extract_summary_candidate(candidate, prompt=prompt)
+            if fallback:
+                return fallback
+    return ""
 
 
 def _latest_notification_at(pending_turn: Mapping[str, Any]) -> float:
@@ -1817,6 +1962,19 @@ def _latest_notification_at(pending_turn: Mapping[str, Any]) -> float:
     return latest
 
 
+def _watchdog_time_value(*values: Any, default: float) -> float:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return default
+
+
 def _watchdog_reminder_summary(session: str, state: str) -> str:
     normalized = str(state or "").strip().lower() or "stalled"
     if normalized == "needs-input":
@@ -1828,6 +1986,38 @@ def _watchdog_reminder_summary(session: str, state: str) -> str:
         f"{situation} To reconnect with it, run `orche status {session}` and "
         f"`orche read {session} --lines 120`."
     )
+
+
+def _watchdog_pending_event_ready(
+    watchdog: Mapping[str, Any],
+    *,
+    event: str,
+    summary: str,
+    now: float,
+    notify_buffer: float,
+) -> tuple[bool, dict[str, Any]]:
+    if notify_buffer <= 0:
+        return True, {
+            "pending_event": "",
+            "pending_event_at": 0.0,
+            "pending_event_summary": "",
+        }
+    pending_event = str(watchdog.get("pending_event") or "")
+    pending_summary = str(watchdog.get("pending_event_summary") or "")
+    pending_at = float(watchdog.get("pending_event_at") or 0.0)
+    if pending_event != event or pending_summary != summary or pending_at <= 0.0:
+        return False, {
+            "pending_event": event,
+            "pending_event_at": now,
+            "pending_event_summary": summary,
+        }
+    if now - pending_at < notify_buffer:
+        return False, {}
+    return True, {
+        "pending_event": "",
+        "pending_event_at": 0.0,
+        "pending_event_summary": "",
+    }
 
 
 def start_session_watchdog(session: str, *, turn_id: str = "") -> int:
@@ -1855,7 +2045,7 @@ def start_session_watchdog(session: str, *, turn_id: str = "") -> int:
             "pid": proc.pid,
             "state": "starting",
             "started_at": time.time(),
-            "last_progress_at": float(turn.get("submitted_at") or time.time()),
+            "last_progress_at": _watchdog_time_value(turn.get("submitted_at"), default=time.time()),
             "last_sample_at": 0.0,
             "idle_samples": 0,
             "stop_requested": False,
@@ -1957,6 +2147,7 @@ def run_session_watchdog(
     stalled_after: float = WATCHDOG_STALLED_AFTER,
     needs_input_after: float = WATCHDOG_NEEDS_INPUT_AFTER,
     reminder_after: float = WATCHDOG_REMINDER_AFTER,
+    notify_buffer: float = WATCHDOG_NOTIFY_BUFFER,
 ) -> str:
     while True:
         meta = load_meta(session)
@@ -1973,7 +2164,61 @@ def run_session_watchdog(
             )
             return "stopped"
         sample = sample_watchdog_state(session, pane_id=str(pending_turn.get("pane_id") or meta.get("pane_id") or ""))
+        sample_capture = str(sample.get("capture") or "")
+        completion_summary = _pending_turn_completion_summary(
+            plugin,
+            pending_turn=pending_turn,
+            capture=sample_capture,
+        )
         now = time.time()
+        if completion_summary:
+            ready, pending_values = _watchdog_pending_event_ready(
+                watchdog,
+                event="completed",
+                summary=completion_summary,
+                now=now,
+                notify_buffer=notify_buffer,
+            )
+            if not ready:
+                update_watchdog_metadata(
+                    session,
+                    turn_id=turn_id,
+                    values={
+                        "state": "completion-pending",
+                        **pending_values,
+                    },
+                )
+                time.sleep(max(0.5, poll_interval))
+                continue
+            if pending_values:
+                update_watchdog_metadata(session, turn_id=turn_id, values=pending_values)
+            emitted = emit_internal_notify(
+                session,
+                event="completed",
+                summary=completion_summary,
+                status="success",
+                turn_id=turn_id,
+                cwd=str(meta.get("cwd") or ""),
+                source="watchdog",
+                tail_text=recent_capture_excerpt(sample_capture),
+            )
+            if not emitted:
+                complete_pending_turn(
+                    session,
+                    summary=completion_summary,
+                    turn_id=turn_id,
+                    prompt=str(pending_turn.get("prompt") or ""),
+                )
+            update_watchdog_metadata(
+                session,
+                turn_id=turn_id,
+                values={
+                    "state": "completed",
+                    "last_event": "completed",
+                    "last_event_at": now,
+                },
+            )
+            return "completed"
         previous_signature = str(watchdog.get("last_signature") or "")
         previous_cursor = (
             str(watchdog.get("last_cursor_x") or ""),
@@ -1981,7 +2226,11 @@ def run_session_watchdog(
         )
         current_cursor = (str(sample.get("cursor_x") or ""), str(sample.get("cursor_y") or ""))
         progress_detected = observable_progress_detected(previous_signature, previous_cursor, sample)
-        last_progress_at = float(watchdog.get("last_progress_at") or pending_turn.get("submitted_at") or now)
+        last_progress_at = _watchdog_time_value(
+            watchdog.get("last_progress_at"),
+            pending_turn.get("submitted_at"),
+            default=now,
+        )
         idle_samples = int(watchdog.get("idle_samples") or 0)
         state = "running"
         if progress_detected:
@@ -1996,6 +2245,29 @@ def run_session_watchdog(
                 state = "needs-input"
             elif idle_samples >= 2 and idle_seconds >= stalled_after:
                 state = "stalled"
+        reset_values: Dict[str, Any] = {}
+        if state == "running":
+            if (
+                watchdog.get("pending_event")
+                or watchdog.get("pending_event_at")
+                or watchdog.get("pending_event_summary")
+            ):
+                reset_values.update(
+                    {
+                        "pending_event": "",
+                        "pending_event_at": 0.0,
+                        "pending_event_summary": "",
+                    }
+                )
+            previous_event = str(watchdog.get("last_event") or "")
+            if previous_event in {"stalled", "needs-input", "failed"}:
+                release_turn_notification(session, previous_event, turn_id=turn_id)
+                reset_values.update(
+                    {
+                        "last_event": "",
+                        "last_event_at": 0.0,
+                    }
+                )
         update_watchdog_metadata(
             session,
             turn_id=turn_id,
@@ -2009,31 +2281,61 @@ def run_session_watchdog(
                 "last_sample_at": now,
                 "last_progress_at": last_progress_at,
                 "idle_samples": idle_samples,
+                **reset_values,
             },
         )
         if state in {"failed", "stalled", "needs-input"}:
             emitted = False
-            if str(watchdog.get("last_event") or "") != state:
-                summary = _watchdog_summary_for_event(
-                    state,
-                    pending_turn=pending_turn,
-                    capture=str(sample.get("capture") or ""),
-                )
-                emitted = emit_internal_notify(
-                    session,
+            last_event = str(watchdog.get("last_event") or "")
+            summary = _watchdog_summary_for_event(
+                state,
+                pending_turn=pending_turn,
+                capture=str(sample.get("capture") or ""),
+            )
+            if last_event == state:
+                if (
+                    watchdog.get("pending_event")
+                    or watchdog.get("pending_event_at")
+                    or watchdog.get("pending_event_summary")
+                ):
+                    update_watchdog_metadata(
+                        session,
+                        turn_id=turn_id,
+                        values={
+                            "pending_event": "",
+                            "pending_event_at": 0.0,
+                            "pending_event_summary": "",
+                        },
+                    )
+            else:
+                ready, pending_values = _watchdog_pending_event_ready(
+                    watchdog,
                     event=state,
                     summary=summary,
-                    status=_watchdog_event_status(state),
-                    turn_id=turn_id,
-                    cwd=str(meta.get("cwd") or ""),
-                    source="watchdog",
-                    tail_text=recent_capture_excerpt(str(sample.get("capture") or "")),
+                    now=now,
+                    notify_buffer=notify_buffer,
                 )
+                if not ready:
+                    if pending_values:
+                        update_watchdog_metadata(session, turn_id=turn_id, values=pending_values)
+                elif str(load_meta(session).get("pending_turn", {}).get("watchdog", {}).get("last_event") or "") != state:
+                    if pending_values:
+                        update_watchdog_metadata(session, turn_id=turn_id, values=pending_values)
+                    emitted = emit_internal_notify(
+                        session,
+                        event=state,
+                        summary=summary,
+                        status=_watchdog_event_status(state),
+                        turn_id=turn_id,
+                        cwd=str(meta.get("cwd") or ""),
+                        source="watchdog",
+                        tail_text=recent_capture_excerpt(str(sample.get("capture") or "")),
+                    )
             update_watchdog_metadata(
                 session,
                 turn_id=turn_id,
                 values={
-                    "last_event": state if emitted else str(watchdog.get("last_event") or ""),
+                    "last_event": state if emitted else last_event,
                     "last_event_at": now if emitted else float(watchdog.get("last_event_at") or 0.0),
                 },
             )
@@ -2151,7 +2453,22 @@ def ensure_session(
             f"Session {session} is already bound to runtime_home={existing_runtime_home}. "
             f"Use the same {plugin.runtime_option_name} or close the session and create a new one."
         )
-    pane_id = ensure_pane(session, cwd, agent)
+    tmux_mode = str(existing_meta.get("tmux_mode") or "").strip()
+    host_pane_id = str(existing_meta.get("host_pane_id") or "").strip()
+    tmux_host_session = str(existing_meta.get("tmux_host_session") or "").strip()
+    if not tmux_mode and resolved_notify_binding:
+        use_inline_pane, tmux_host_session, host_pane_id = _should_use_inline_pane(resolved_notify_binding)
+        tmux_mode = "inline-pane" if use_inline_pane else "dedicated-session"
+    elif not tmux_mode:
+        tmux_mode = "dedicated-session"
+    pane_id = ensure_pane(
+        session,
+        cwd,
+        agent,
+        tmux_mode=tmux_mode,
+        host_pane_id=host_pane_id,
+        tmux_host_session=tmux_host_session,
+    )
     pane_id = ensure_agent_running(
         plugin,
         session,
@@ -2170,6 +2487,9 @@ def ensure_session(
             "agent": agent,
             "pane_id": pane_id,
             "launch_mode": "managed",
+            "tmux_mode": tmux_mode,
+            "host_pane_id": host_pane_id,
+            "tmux_host_session": tmux_host_session,
             "last_seen_at": time.time(),
         }
     )
@@ -2262,10 +2582,12 @@ def latest_turn_summary(session: str) -> str:
             pane_id = str((bridge_resolve(session) or pending_turn.get("pane_id") or meta.get("pane_id") or "")).strip()
             capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES) if pane_id else ""
             before_capture = str(pending_turn.get("before_capture") or "")
-            delta = turn_delta(before_capture, capture) if capture else ""
-            summary = plugin.extract_completion_summary(delta, prompt)
-            if not summary and plugin.capture_has_completion_surface(delta, prompt):
-                summary = extract_summary_candidate(delta, prompt=prompt)
+            summary = _completion_summary_from_capture(
+                plugin,
+                capture=capture,
+                before_capture=before_capture,
+                prompt=prompt,
+            )
             if summary or time.monotonic() >= deadline:
                 break
             time.sleep(LATEST_TURN_SUMMARY_RETRY_INTERVAL)
@@ -2340,6 +2662,14 @@ def current_session_id() -> str:
     if env_session:
         return env_session
 
+    current_pane_id = _current_tmux_value("#{pane_id}")
+    if current_pane_id:
+        for entry in list_sessions():
+            if str(entry.get("pane_id") or "").strip() == current_pane_id:
+                session = str(entry.get("session") or "").strip()
+                if session:
+                    return session
+
     current_tmux_session = _current_tmux_value("#{session_name}")
     if current_tmux_session:
         for entry in list_sessions():
@@ -2349,14 +2679,6 @@ def current_session_id() -> str:
             mapped_tmux_session = str(entry.get("tmux_session") or tmux_session_name(session)).strip()
             if mapped_tmux_session == current_tmux_session:
                 return session
-
-    current_pane_id = _current_tmux_value("#{pane_id}")
-    if current_pane_id:
-        for entry in list_sessions():
-            if str(entry.get("pane_id") or "").strip() == current_pane_id:
-                session = str(entry.get("session") or "").strip()
-                if session:
-                    return session
 
     pane_title = _current_tmux_value("#{pane_title}")
     if pane_title:
@@ -2380,15 +2702,20 @@ def close_session(session: str) -> str:
     plugin = get_agent(agent)
     pane_id = bridge_resolve(session) or str(meta.get("pane_id") or "")
     info = get_pane_info(pane_id) if pane_id and pane_exists(pane_id) else None
+    tmux_mode = str(meta.get("tmux_mode") or "").strip() or "dedicated-session"
     target_tmux_session = str((info or {}).get("session_name") or meta.get("tmux_session") or "").strip()
     if not target_tmux_session:
         target_tmux_session = tmux_session_name(session)
     with contextlib.suppress(Exception):
         stop_session_watchdog(session)
-    for client_tty in list_tmux_session_clients(target_tmux_session):
-        tmux("detach-client", "-t", client_tty, check=False, capture=True)
-    if _tmux_has_session(target_tmux_session):
-        tmux("kill-session", "-t", target_tmux_session, check=False, capture=True)
+    if tmux_mode == "inline-pane":
+        if pane_id and pane_exists(pane_id):
+            tmux("kill-pane", "-t", pane_id, check=False, capture=True)
+    else:
+        for client_tty in list_tmux_session_clients(target_tmux_session):
+            tmux("detach-client", "-t", client_tty, check=False, capture=True)
+        if _tmux_has_session(target_tmux_session):
+            tmux("kill-session", "-t", target_tmux_session, check=False, capture=True)
     runtime_home = runtime_home_from_meta(meta)
     if runtime_home and runtime_home_managed_from_meta(meta):
         plugin.cleanup_runtime(

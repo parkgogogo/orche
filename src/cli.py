@@ -267,6 +267,12 @@ def _print_error(exc: BaseException) -> None:
     stderr.print(f"[bold red]Error:[/bold red] {detail}")
 
 
+def _print_action_ok(action: str, **fields: object) -> None:
+    parts = [f"{key}={value}" for key, value in fields.items() if str(value).strip()]
+    suffix = " " + " ".join(parts) if parts else ""
+    console.print(f"{action} ok:{suffix}")
+
+
 def _resolve_path(value: Optional[Path], *, must_exist: bool = False, require_dir: bool = False) -> Optional[Path]:
     if value is None:
         return None
@@ -456,7 +462,7 @@ def open_session(
             notify=notify,
             cli_args=list(ctx.args),
         )
-        console.print(session)
+        _print_action_ok("open", session=session)
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)
 
@@ -466,9 +472,9 @@ def attach(
     session: str = typer.Argument(..., help="Session name."),
 ) -> None:
     try:
-        attach_session(session)
+        target = attach_session(session)
         _record_session_action(session, "attach")
-        console.print(session)
+        _print_action_ok("attach", session=session, target=target)
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)
 
@@ -503,7 +509,7 @@ def prompt(
         if cwd is None or agent is None:
             raise OrcheError(f"Session {session} is missing cwd/agent context; open it first")
         send_prompt(session, cwd, agent, message)
-        console.print(session)
+        _print_action_ok("prompt", session=session)
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)
 
@@ -540,7 +546,7 @@ def input_text(
             raise OrcheError(f"Session {session} is missing cwd/agent context; open it first")
         bridge_type(session, text)
         append_action_history(session, cwd, agent, "input", text=text)
-        console.print(session)
+        _print_action_ok("input", session=session, chars=len(text))
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)
 
@@ -569,7 +575,7 @@ def key(
             raise OrcheError(f"Session {session} is missing cwd/agent context; open it first")
         bridge_keys(session, keys)
         append_action_history(session, cwd, agent, "key", keys=list(keys))
-        console.print(session)
+        _print_action_ok("key", session=session, keys=",".join(keys))
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)
 
@@ -605,7 +611,7 @@ def cancel(
             raise OrcheError(f"Session {session} is missing cwd/agent context; open it first")
         pane_id = cancel_session(session)
         append_action_history(session, cwd, agent, "cancel", pane_id=pane_id)
-        console.print(f"Sent Ctrl-C to {pane_id}")
+        _print_action_ok("cancel", session=session, pane=pane_id)
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)
 
@@ -632,11 +638,11 @@ def close(
                     pane_id = close_session(name)
                     if cwd is not None and agent is not None:
                         append_action_history(name, cwd, agent, "close", pane_id=pane_id)
-                    closed.append(name)
+                    closed.append(f"close ok: session={name} pane={pane_id}")
                 except (OrcheError, subprocess.CalledProcessError) as exc:
                     failures.append(f"{name}: {_format_error_detail(exc)}")
-            for name in closed:
-                console.print(name)
+            for line in closed:
+                console.print(line)
             if failures:
                 raise OrcheError("Failed to close some sessions: " + "; ".join(failures))
             return
@@ -647,7 +653,7 @@ def close(
         pane_id = close_session(session)
         if cwd is not None and agent is not None:
             append_action_history(session, cwd, agent, "close", pane_id=pane_id)
-        console.print(session)
+        _print_action_ok("close", session=session, pane=pane_id)
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)
 
@@ -920,3 +926,7 @@ def main() -> int:
         _print_error(exc)
         return 1
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

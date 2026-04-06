@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.4.31 - 2026-04-06
+
+- Sync Claude workspace trust into the source `~/.claude.json` project entry before cloning managed runtimes so managed Claude sessions no longer miss the trust-folder state that Codex already inherits.
+- Preserve existing Claude source project metadata while adding `hasTrustDialogAccepted`, with atomic writes and a backup file for safety.
+- Add regression coverage for managed Claude trust sync and existing source-config preservation.
+
+## v0.4.28 - 2026-04-06
+
+- Fix the managed `--notify` launch regression introduced by the inline tmux worker changes so OpenClaw and other managed-session flows no longer crash with an unbound `host_pane_id`.
+- Add regression coverage to keep managed notify launches stable across the inline-pane and dedicated-session paths.
+
+## v0.4.27 - 2026-04-06
+
+- Republish the inline tmux worker pane and explicit CLI success-output changes with a corrected semantic version tag after the previous tag pointed at the wrong commit.
+
+## v0.4.26 - 2026-04-06
+
+- Add inline tmux worker panes for Codex/Claude reviewer-to-worker tmux notify flows so delegated workers can stay visible in the current tmux layout.
+- Make `attach`, `close`, and `whoami` behave correctly when multiple `orche` sessions share the same tmux session through inline pane mode.
+- Standardize action-oriented CLI success output so commands such as `open`, `prompt`, `attach`, `input`, `key`, `cancel`, and `close` emit explicit machine-readable success messages.
+
 ## v0.4.18 - 2026-04-05
 
 - Fix Codex notify payload parsing for current `codex-cli` hook payloads that send hyphenated fields such as `thread-id` and `turn-id`.
