@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.27 - 2026-04-06
+
+- Republish the inline tmux worker pane and explicit CLI success-output changes with a corrected semantic version tag after the previous tag pointed at the wrong commit.
+
 ## v0.4.26 - 2026-04-06
 
 - Add inline tmux worker panes for Codex/Claude reviewer-to-worker tmux notify flows so delegated workers can stay visible in the current tmux layout.
