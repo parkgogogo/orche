@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.30 - 2026-04-06
+
+- Sync Claude workspace trust into the source `~/.claude.json` project entry before cloning managed runtimes so managed Claude sessions no longer miss the trust-folder state that Codex already inherits.
+- Preserve existing Claude source project metadata while adding `hasTrustDialogAccepted`, with atomic writes and a backup file for safety.
+- Add regression coverage for managed Claude trust sync and existing source-config preservation.
+
 ## v0.4.28 - 2026-04-06
 
 - Fix the managed `--notify` launch regression introduced by the inline tmux worker changes so OpenClaw and other managed-session flows no longer crash with an unbound `host_pane_id`.

@@ -31,6 +31,12 @@ def test_supported_agents_include_codex_and_claude():
 
 def test_ensure_managed_claude_home_writes_stop_hook(tmp_path, monkeypatch):
     monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend.claude_agent_module, "source_claude_config_path", lambda: tmp_path / ".claude.json")
+    monkeypatch.setattr(
+        backend.claude_agent_module,
+        "source_claude_config_backup_path",
+        lambda: tmp_path / ".claude.json.orche.bak",
+    )
 
     target = backend.ensure_managed_claude_home(
         "repo-claude-main",
@@ -42,10 +48,50 @@ def test_ensure_managed_claude_home_writes_stop_hook(tmp_path, monkeypatch):
     hook_path = Path(target) / "hooks" / "discord-turn-notify.sh"
     payload = json.loads(settings_path.read_text(encoding="utf-8"))
     command = payload["hooks"]["Stop"][0]["hooks"][0]["command"]
+    source_payload = json.loads((tmp_path / ".claude.json").read_text(encoding="utf-8"))
 
     assert hook_path.exists()
     assert "--session repo-claude-main" in command
     assert "--channel-id 1234567890" in command
+    assert source_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
+
+
+def test_ensure_managed_claude_home_preserves_existing_source_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend.claude_agent_module, "source_claude_config_path", lambda: tmp_path / ".claude.json")
+    monkeypatch.setattr(
+        backend.claude_agent_module,
+        "source_claude_config_backup_path",
+        lambda: tmp_path / ".claude.json.orche.bak",
+    )
+    source_config_path = tmp_path / ".claude.json"
+    source_config_path.write_text(
+        json.dumps(
+            {
+                "numStartups": 12,
+                "projects": {
+                    str(tmp_path.resolve()): {
+                        "allowedTools": ["Bash(git status:*)"],
+                    }
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    backend.ensure_managed_claude_home(
+        "repo-claude-main",
+        cwd=tmp_path,
+        discord_channel_id=None,
+    )
+
+    source_payload = json.loads(source_config_path.read_text(encoding="utf-8"))
+
+    assert source_payload["numStartups"] == 12
+    assert source_payload["projects"][str(tmp_path.resolve())]["allowedTools"] == ["Bash(git status:*)"]
+    assert source_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
 
 
 def test_ensure_session_supports_claude_agent(xdg_runtime, tmp_path, monkeypatch):

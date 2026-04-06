@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import shlex
+import time
 from pathlib import Path
+
+from paths import ensure_directories, locks_dir
 
 from .base import AgentPlugin, AgentRuntime
 from .common import (
@@ -25,6 +29,8 @@ READY_SURFACE_HINTS = (
     "shift+tab",
     "esc to interrupt",
 )
+SOURCE_CONFIG_LOCK_NAME = "claude-source-config"
+SOURCE_CONFIG_BACKUP_SUFFIX = ".orche.bak"
 
 
 def _compact_prompt_text(value: str) -> str:
@@ -109,6 +115,83 @@ def default_settings_path(runtime_home: Path) -> Path:
     return runtime_home / "settings.json"
 
 
+def source_claude_config_path() -> Path:
+    return Path.home() / ".claude.json"
+
+
+def source_claude_config_backup_path() -> Path:
+    config_path = source_claude_config_path()
+    return config_path.with_name(config_path.name + SOURCE_CONFIG_BACKUP_SUFFIX)
+
+
+@contextlib.contextmanager
+def source_config_lock(*, timeout: float = 5.0):
+    ensure_directories()
+    path = locks_dir() / f"{SOURCE_CONFIG_LOCK_NAME}.lock"
+    deadline = time.time() + timeout
+    while True:
+        try:
+            fd = path.open("x")
+            break
+        except FileExistsError:
+            if time.time() > deadline:
+                raise RuntimeError("Timed out waiting for Claude source config lock")
+            time.sleep(0.1)
+    try:
+        fd.write(str(Path.cwd()))
+        fd.flush()
+        yield
+    finally:
+        fd.close()
+        with contextlib.suppress(FileNotFoundError):
+            path.unlink()
+
+
+def _read_source_config(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Refusing to write invalid JSON for {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Refusing to rewrite non-object Claude source config at {path}")
+    return payload
+
+
+def sync_trust_to_source_config(cwd: Path) -> dict[str, object]:
+    config_path = source_claude_config_path()
+    target = str(cwd.resolve())
+    with source_config_lock():
+        original = _read_source_config(config_path)
+        projects = original.get("projects")
+        if projects is None:
+            projects_dict: dict[str, object] = {}
+        elif isinstance(projects, dict):
+            projects_dict = dict(projects)
+        else:
+            raise RuntimeError(f"Refusing to rewrite invalid Claude projects config at {config_path}")
+        project_entry = projects_dict.get(target)
+        if project_entry is None:
+            project_payload: dict[str, object] = {}
+        elif isinstance(project_entry, dict):
+            project_payload = dict(project_entry)
+        else:
+            raise RuntimeError(f"Refusing to rewrite invalid Claude project entry for {target}")
+        if project_payload.get("hasTrustDialogAccepted") is True:
+            return original
+        project_payload["hasTrustDialogAccepted"] = True
+        projects_dict[target] = project_payload
+        updated = dict(original)
+        updated["projects"] = projects_dict
+        write_text_atomically(
+            config_path,
+            json.dumps(updated, indent=2, ensure_ascii=False) + "\n",
+            backup_path=source_claude_config_backup_path(),
+        )
+        return updated
+
+
 def render_stop_hook_command(hook_path: Path, *, session: str, discord_channel_id: str | None) -> str:
     parts = ["/bin/bash", str(hook_path), "--session", session]
     if discord_channel_id:
@@ -149,7 +232,7 @@ class ClaudeAgent(AgentPlugin):
         cwd: Path,
         discord_channel_id: str | None,
     ) -> AgentRuntime:
-        _ = cwd
+        sync_trust_to_source_config(cwd)
         target = default_claude_home_path(session)
         target.mkdir(parents=True, exist_ok=True)
         write_notify_hook(default_notify_hook_path(target))
