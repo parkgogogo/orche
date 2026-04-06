@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.4.18 - 2026-04-05
+
+- Fix Codex notify payload parsing for current `codex-cli` hook payloads that send hyphenated fields such as `thread-id` and `turn-id`.
+- Align Discord and tmux notify status labels with native worker states so `stalled` and `needs-input` no longer collapse to generic `warning`.
+- Add regression coverage for watchdog reminder status mapping and current Codex notify payload compatibility.
+
+## v0.4.10 - 2026-04-04
+
+- Avoid tmux window creation failures like `index 0 in use` by explicitly targeting the next available window index when opening new `orche` windows.
+- Add regression coverage for window-index allocation so new sessions remain stable in tmux layouts with sparse or preoccupied indexes.
+- Make CI assertions environment-safe by removing hard-coded repo paths and normalizing Rich ANSI output in CLI tests.
+
+## v0.4.9 - 2026-04-04
+
+- Export `ORCHE_SESSION` for native Codex and Claude launches so agents can reliably resolve their current session from inside the worker pane.
+- Add regression coverage for native launch commands to ensure session context is preserved across `open -- ...` and `orche codex`.
+- Refine `SKILL.md` to require session detection with `orche whoami` before choosing tmux notify targets, and to prefer managed sessions when notify routing matters.
+
+## v0.4.8 - 2026-04-04
+
+- Add `orche codex` and `orche claude` shortcut commands that open a fresh native session in the current directory and attach immediately.
+- Generate unique shortcut session names with a random suffix so repeated launches in the same repo do not collide.
+- Support `-h` on the root command and command groups, plus `-v` on the root command, without expanding short aliases to leaf commands.
+
 ## v0.4.3 - 2026-04-03
 
 - Fix Discord notify routing so session-scoped deliveries prefer the session metadata `discord_channel_id` instead of whichever channel was most recently written into global runtime config.

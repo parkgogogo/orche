@@ -7,6 +7,7 @@ from .config import NotifyConfig
 from .discord import DiscordNotifier
 from .exceptions import NotifyConfigError
 from .http import HTTPClient
+from .tmux_bridge import TmuxBridgeNotifier
 
 NotifierFactory = Callable[[NotifyConfig, Optional[HTTPClient]], Notifier]
 
@@ -27,8 +28,17 @@ class NotifierRegistry:
         *,
         http_client: HTTPClient | None = None,
     ) -> List[Notifier]:
+        return self.create_many_for(config.providers, config, http_client=http_client)
+
+    def create_many_for(
+        self,
+        providers: Iterable[str],
+        config: NotifyConfig,
+        *,
+        http_client: HTTPClient | None = None,
+    ) -> List[Notifier]:
         notifiers: List[Notifier] = []
-        for provider in config.providers:
+        for provider in providers:
             factory = self._factories.get(provider)
             if factory is None:
                 supported = ", ".join(self.names())
@@ -38,8 +48,14 @@ class NotifierRegistry:
 
 
 def _discord_factory(config: NotifyConfig, http_client: HTTPClient | None) -> Notifier:
-    return DiscordNotifier(config.discord, http_client=http_client)
+    return DiscordNotifier(config, http_client=http_client)
+
+
+def _tmux_bridge_factory(config: NotifyConfig, http_client: HTTPClient | None) -> Notifier:
+    _ = http_client
+    return TmuxBridgeNotifier(config)
 
 
 DEFAULT_REGISTRY = NotifierRegistry()
 DEFAULT_REGISTRY.register("discord", _discord_factory)
+DEFAULT_REGISTRY.register("tmux-bridge", _tmux_bridge_factory)

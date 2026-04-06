@@ -21,17 +21,22 @@ def _as_bool(value: Any, default: bool) -> bool:
     return default
 
 
-def _as_targets(value: Any) -> Tuple[str, ...]:
+def _as_provider(value: Any) -> str:
     if value is None:
-        return ("discord",)
+        return "discord"
     if isinstance(value, str):
         items = [item.strip() for item in value.replace(";", ",").split(",")]
-        targets = tuple(item for item in items if item)
-        return targets or ("discord",)
+        for item in items:
+            if item:
+                return item
+        return "discord"
     if isinstance(value, (list, tuple)):
-        targets = tuple(str(item).strip() for item in value if str(item).strip())
-        return targets or ("discord",)
-    return ("discord",)
+        for item in value:
+            text = str(item).strip()
+            if text:
+                return text
+        return "discord"
+    return "discord"
 
 
 def _as_int(value: Any, default: int) -> int:
@@ -52,13 +57,17 @@ class DiscordNotifyConfig:
 @dataclass(frozen=True)
 class NotifyConfig:
     enabled: bool = True
-    providers: Tuple[str, ...] = ("discord",)
+    provider: str = "discord"
     include_cwd: bool = True
     include_session: bool = True
-    default_message_prefix: str = "Codex turn complete"
+    default_message_prefix: str = "Agent turn complete"
     max_message_chars: int = 1500
     summary_max_chars: int = 1200
     discord: DiscordNotifyConfig = field(default_factory=DiscordNotifyConfig)
+
+    @property
+    def providers(self) -> Tuple[str, ...]:
+        return (self.provider,) if self.provider else ()
 
 
 def load_notify_config(
@@ -68,11 +77,15 @@ def load_notify_config(
 ) -> NotifyConfig:
     values = dict(config)
     environ = os.environ if env is None else env
-    providers = _as_targets(
-        values.get("notify_targets")
+    provider = _as_provider(
+        values.get("notify_provider")
+        or values.get("notify.provider")
+        or values.get("notify_target")
         or values.get("notify_providers")
+        or values.get("notify_provider_csv")
         or values.get("notify.providers")
         or values.get("notify_targets_csv")
+        or values.get("notify_targets")
     )
     discord = DiscordNotifyConfig(
         bot_token=str(environ.get("DISCORD_BOT_TOKEN") or values.get("discord_bot_token") or "").strip(),
@@ -86,11 +99,11 @@ def load_notify_config(
     )
     return NotifyConfig(
         enabled=_as_bool(values.get("notify_enabled"), True),
-        providers=providers,
+        provider=provider,
         include_cwd=_as_bool(values.get("notify_include_cwd"), True),
         include_session=_as_bool(values.get("notify_include_session"), True),
-        default_message_prefix=str(values.get("notify_default_message_prefix") or "Codex turn complete").strip()
-        or "Codex turn complete",
+        default_message_prefix=str(values.get("notify_default_message_prefix") or "Agent turn complete").strip()
+        or "Agent turn complete",
         max_message_chars=max(1, _as_int(values.get("notify_max_message_chars"), 1500)),
         summary_max_chars=max(1, _as_int(values.get("notify_summary_max_chars"), 1200)),
         discord=discord,

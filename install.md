@@ -1,15 +1,23 @@
 # tmux-orche Installation Guide
 
-This guide is written for agent-guided setup. Follow it top to bottom, verify each dependency, then install `tmux-orche`.
+Install `tmux-orche` when you want persistent agent sessions, explicit handoff, and the ability to inspect or take over the exact same terminal later.
 
-## 1. Check Dependencies
+This guide is organized for the shortest path to a working setup:
+
+1. verify dependencies
+2. install `tmux-orche`
+3. verify the CLI
+4. run a minimal real session
+
+## 1. Prerequisites
 
 `tmux-orche` requires:
 
 - `tmux`
-- `tmux-bridge`
-- `codex` CLI
+- at least one supported agent CLI: `codex` or `claude`
 - Python `3.9+`
+
+You do **not** need to install `smux` or a separate `tmux-bridge` binary. The tmux notify path is built in.
 
 ### Check `tmux`
 
@@ -39,41 +47,24 @@ Fedora:
 sudo dnf install -y tmux
 ```
 
-### Check `tmux-bridge`
-
-```bash
-command -v tmux-bridge
-```
-
-If `tmux-bridge` is missing, install it using the official `smux` / `tmux-bridge` installation flow used in your environment. `tmux-orche` expects `tmux-bridge` either:
-
-- on your `PATH`, or
-- at `~/.smux/bin/tmux-bridge`
-
-After installation, verify again:
-
-```bash
-command -v tmux-bridge || ls ~/.smux/bin/tmux-bridge
-```
-
-### Check `codex` CLI
+### Check agent CLIs
 
 ```bash
 command -v codex
 codex --version
+
+command -v claude
+claude --version
 ```
 
-If `codex` is missing, install the official Codex CLI first, then log in if required:
+Install and log in to whichever agent you plan to use:
 
 ```bash
 codex login
+claude login
 ```
 
-Verify that Codex can start:
-
-```bash
-codex --help
-```
+At least one of them must be available.
 
 ### Check Python
 
@@ -81,13 +72,13 @@ codex --help
 python3 --version
 ```
 
-If needed, install Python `3.9+` using your system package manager, Homebrew, `pyenv`, or your standard environment management tool.
+If needed, install Python `3.9+` via your normal system package manager, Homebrew, `pyenv`, or equivalent.
 
 ## 2. Install tmux-orche
 
-Choose one installation method.
+Choose one installation path.
 
-### Option A: Install with `pip`
+### Option A: `pip`
 
 From PyPI:
 
@@ -101,7 +92,7 @@ From a local checkout:
 python3 -m pip install .
 ```
 
-### Option B: Install with `uv`
+### Option B: `uv`
 
 As a global tool:
 
@@ -115,13 +106,13 @@ From a local checkout:
 uv tool install .
 ```
 
-Into the current Python environment:
+Into the current environment:
 
 ```bash
 uv pip install .
 ```
 
-### Option C: Install from source
+### Option C: source checkout
 
 ```bash
 git clone https://github.com/parkgogogo/orche
@@ -132,48 +123,107 @@ python3 -m pip install -U pip
 python3 -m pip install .
 ```
 
-## 3. Quick Verification
+## 3. Verify the CLI
 
-Verify the CLI is on `PATH`:
+Make sure the executable is on `PATH`:
 
 ```bash
 command -v orche
 orche --help
-orche backend
 ```
 
-Verify config commands work:
+Make sure config and session commands work:
 
 ```bash
 orche config list
+orche open --help
+orche list
 ```
 
-Verify session creation help:
-
-```bash
-orche session-new --help
-```
-
-Optional package sanity check from source checkout:
+Optional source-checkout sanity test:
 
 ```bash
 python3 -m compileall src
 ```
 
-## 4. Troubleshooting
+## 4. Minimal Real Session
+
+The fastest useful validation is to open a real session and inspect it.
+
+### Managed session
+
+```bash
+orche open --cwd /path/to/repo --agent codex --name repo-worker --notify tmux:repo-reviewer
+orche prompt repo-worker "reply with READY and nothing else"
+orche status repo-worker
+orche read repo-worker --lines 80
+```
+
+### Native session
+
+Use native mode only if you need raw agent CLI args:
+
+```bash
+orche open --cwd /path/to/repo --agent claude -- --print --help
+```
+
+Rules:
+
+- raw agent args must come after `--`
+- native sessions do not take `--notify`
+- managed sessions are the default recommendation
+
+## 5. How To Take Over Mid-Flight
+
+You have two normal ways to inspect or take control:
+
+```bash
+orche status <session>
+orche read <session> --lines 120
+orche attach <session>
+```
+
+`orche attach` is the cleanest way to jump into the live TTY.
+
+If you want the lower-level tmux view, you can also inspect the tmux server directly:
+
+```bash
+tmux ls
+tmux attach -t orche-smux
+```
+
+`tmux-orche` sessions live as windows inside the tmux session, so `orche list` is usually the clearer operational view.
+
+## 6. Notify Model
+
+Notify is explicit.
+
+`orche open --notify` accepts exactly one value:
+
+- `tmux:<target-session>`
+- `discord:<channel-id>`
+
+Examples:
+
+```bash
+orche open --cwd /repo --agent codex --name repo-reviewer --notify discord:123456789012345678
+orche open --cwd /repo --agent codex --name repo-worker --notify tmux:repo-reviewer
+```
+
+There is no default notify route. If you want delivery, bind it explicitly when opening the session.
+
+## 7. Troubleshooting
 
 ### `orche: command not found`
 
 The install location is not on `PATH`.
-
-Check where the script was installed:
 
 ```bash
 python3 -m pip show tmux-orche
 python3 -m site --user-base
 ```
 
-If you used `uv tool install`, ensure the uv tool bin directory is on `PATH`.
+If you used `uv tool install`, make sure the uv tool bin directory is on `PATH`.
 
 ### `tmux is not installed`
 
@@ -184,75 +234,69 @@ command -v tmux
 tmux -V
 ```
 
-### `tmux-bridge is not installed`
+### `codex` or `claude` is missing
 
-Install `tmux-bridge` using your environment's `smux` setup, then verify one of these works:
-
-```bash
-command -v tmux-bridge
-ls ~/.smux/bin/tmux-bridge
-```
-
-### `codex is not installed`
-
-Install the Codex CLI, then verify:
+Verify:
 
 ```bash
 command -v codex
-codex --help
+command -v claude
 ```
 
-### Codex starts but is not logged in
-
-Log in first:
+### The agent starts but is not logged in
 
 ```bash
 codex login
+claude login
 ```
 
-### Session creation fails
+### Opening a session fails
 
-Check the runtime dependencies again:
+Check the basics again:
 
 ```bash
 command -v tmux
-command -v tmux-bridge || ls ~/.smux/bin/tmux-bridge
 command -v codex
+command -v claude
 ```
 
-Then check the session command directly:
+Then try the smallest useful command:
 
 ```bash
-orche session-new --cwd /path/to/repo --agent codex
+orche open --cwd /path/to/repo --agent codex
 ```
 
-### Managed `CODEX_HOME` problems
+### Notify does not fire
 
-By default, `orche` creates per-session temporary Codex homes under `/tmp/orche-codex-<session>/`.
-
-Inspect session status:
+Check whether you opened the session with an explicit notify binding:
 
 ```bash
-orche status --session <session>
+orche status <session>
 ```
 
-If needed, close the session and recreate it:
+Examples:
 
 ```bash
-orche close --session <session>
-orche session-new --cwd /path/to/repo --agent codex
+orche open --cwd /repo --agent codex --notify discord:123456789012345678
+orche open --cwd /repo --agent codex --notify tmux:repo-reviewer
 ```
 
-### Notify or config issues
+### The session needs manual inspection
 
-Check the runtime config:
+```bash
+orche status <session>
+orche read <session> --lines 120
+orche attach <session>
+```
+
+### Config issues
 
 ```bash
 orche config list
 cat ~/.config/orche/config.json
 ```
 
-If you are debugging notify delivery, also check:
+For watchdog-generated summaries:
 
 ```bash
 orche turn-summary --session <session>

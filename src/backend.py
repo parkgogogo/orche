@@ -6,57 +6,53 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
-import tempfile
+import sys
 import time
 import traceback
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover
-    try:
-        import tomli as tomllib
-    except ModuleNotFoundError:  # pragma: no cover
-        tomllib = None
-
-from notify_hook import NOTIFY_DISCORD_SH
+import agents.claude as claude_agent_module
+import agents.codex as codex_agent_module
+from agents import AgentPlugin, AgentRuntime, get_agent_plugin, supported_agents
+from agents.claude import ClaudeAgent, default_claude_home_path
+from agents.codex import CodexAgent, SOURCE_CONFIG_BACKUP_SUFFIX, default_codex_home_path
+from agents.common import (
+    ensure_orche_shim,
+    normalize_runtime_home,
+    remove_runtime_home,
+    validate_discord_channel_id as common_validate_discord_channel_id,
+    write_text_atomically,
+)
 from paths import config_path, ensure_directories, history_dir, locks_dir, meta_dir, orch_log_path
 
-BACKEND = "smux"
-TMUX_SESSION = "orche-smux"
+BACKEND = "tmux"
+TMUX_SESSION = "orche"
+LEGACY_TMUX_SESSION = "orche-smux"
 DEFAULT_CAPTURE_LINES = 200
 STARTUP_TIMEOUT = 90.0
-READY_STREAK_REQUIRED = 2
+WATCHDOG_CAPTURE_LINES = DEFAULT_CAPTURE_LINES
+NOTIFY_TAIL_LINES = 20
+WATCHDOG_POLL_INTERVAL = 3.0
+WATCHDOG_STALLED_AFTER = 45.0
+WATCHDOG_NEEDS_INPUT_AFTER = 120.0
+WATCHDOG_REMINDER_AFTER = 600.0
+WATCHDOG_ACTIVE_CPU_THRESHOLD = 5.0
+LATEST_TURN_SUMMARY_RETRY_SECONDS = 5.0
+LATEST_TURN_SUMMARY_RETRY_INTERVAL = 0.25
+LAUNCH_ERROR_PREFIX = "orche launch error:"
 CONFIG_COMMENT = (
-    "orche runtime config. session is the orche codex session label; "
+    "orche runtime config. session is the active orche agent session label; "
     "discord_session is the Discord/OpenClaw session key used for notify routing."
 )
-READY_SURFACE_HINTS = (
-    "OpenAI Codex",
-    "Approvals:",
-    "model:",
-    "full-auto",
-    "dangerously-bypass-approvals-and-sandbox",
-    "Esc to interrupt",
-    "Ctrl-C to interrupt",
-)
-TMUX_BRIDGE_FALLBACK = Path.home() / ".smux" / "bin" / "tmux-bridge"
-DEFAULT_CODEX_HOME_ROOT = Path(tempfile.gettempdir())
-DEFAULT_CODEX_SOURCE_HOME = Path.home() / ".codex"
-MANAGED_CODEX_RUNTIME_DIRS = {".tmp", "log", "shell_snapshots", "tmp"}
-MANAGED_CODEX_RUNTIME_FILE_GLOBS = ("history.jsonl", "logs_*.sqlite*", "state_*.sqlite*")
-TOML_TABLE_HEADER_RE = re.compile(r"^\s*\[\[?.*\]\]?\s*$")
-TOML_NOTIFY_KEY_RE = re.compile(r"^\s*notify\s*=")
-TOML_PROJECT_HEADER_RE = re.compile(r"^\s*\[projects\.(.+)\]\s*$")
-TOML_TRUST_LEVEL_RE = re.compile(r"^\s*trust_level\s*=")
-SOURCE_CONFIG_LOCK_NAME = "codex-source-config"
-SOURCE_CONFIG_BACKUP_SUFFIX = ".orche.bak"
+DEFAULT_CODEX_HOME_ROOT = codex_agent_module.DEFAULT_RUNTIME_HOME_ROOT
+DEFAULT_CODEX_SOURCE_HOME = codex_agent_module.DEFAULT_CODEX_SOURCE_HOME
+SUPPORTED_NOTIFY_PROVIDERS = ("discord", "tmux-bridge")
 CONFIG_KEY_MAP = {
     "discord.bot-token": "discord_bot_token",
-    "discord.channel-id": "discord_channel_id",
     "discord.mention-user-id": "notify_mention_user_id",
     "discord.webhook-url": "discord_webhook_url",
     "notify.enabled": "notify_enabled",
@@ -64,6 +60,10 @@ CONFIG_KEY_MAP = {
 
 
 class OrcheError(RuntimeError):
+    pass
+
+
+class AgentStartupBlockedError(OrcheError):
     pass
 
 
@@ -134,6 +134,14 @@ def extract_summary_candidate(text: str, *, prompt: str = "") -> str:
     return lines[-1] if lines else ""
 
 
+def _is_prompt_fragment(candidate: str, prompt: str) -> bool:
+    candidate_inline = compact_text(candidate)
+    prompt_inline = compact_text(prompt)
+    if not candidate_inline or not prompt_inline:
+        return False
+    return len(candidate_inline) >= 8 and candidate_inline in prompt_inline
+
+
 def log_event(event: str, **fields: Any) -> None:
     ensure_directories()
     record = {
@@ -177,9 +185,7 @@ def repo_name(cwd: Path) -> str:
 
 
 def normalize_codex_home(codex_home: Optional[Union[Path, str]]) -> str:
-    if codex_home in (None, ""):
-        return ""
-    return str(Path(str(codex_home)).expanduser().resolve())
+    return normalize_runtime_home(codex_home)
 
 
 def default_session_name(cwd: Path, agent: str, purpose: str = "main") -> str:
@@ -190,245 +196,12 @@ def window_name(session: str) -> str:
     return f"orche-{slugify(session)}"
 
 
+def tmux_session_name(session: str) -> str:
+    return f"{TMUX_SESSION}-{session_key(session)}"
+
+
 def session_key(session: str) -> str:
     return slugify(session)
-
-
-def default_codex_home_path(session: str) -> Path:
-    return DEFAULT_CODEX_HOME_ROOT / f"orche-codex-{session_key(session)}"
-
-
-def default_notify_hook_path(codex_home: Path) -> Path:
-    return codex_home / "hooks" / "discord-turn-notify.sh"
-
-
-def source_codex_config_path() -> Path:
-    return DEFAULT_CODEX_SOURCE_HOME / "config.toml"
-
-
-def source_codex_config_backup_path() -> Path:
-    return source_codex_config_path().with_name(source_codex_config_path().name + SOURCE_CONFIG_BACKUP_SUFFIX)
-
-
-def render_notify_command(hook_path: Path, *, session: str, discord_channel_id: Optional[str]) -> str:
-    values = ["/bin/bash", str(hook_path), "--session", session]
-    if discord_channel_id:
-        values.extend(["--channel-id", validate_discord_channel_id(discord_channel_id)])
-    return "notify = [" + ", ".join(json.dumps(value) for value in values) + "]"
-
-
-def write_notify_hook(hook_path: Path) -> None:
-    hook_path.parent.mkdir(parents=True, exist_ok=True)
-    hook_path.write_text(NOTIFY_DISCORD_SH, encoding="utf-8")
-    hook_path.chmod(0o755)
-
-
-def strip_notify_assignments(lines: List[str]) -> List[str]:
-    cleaned: List[str] = []
-    skipping = False
-    bracket_depth = 0
-    for line in lines:
-        if not skipping and TOML_NOTIFY_KEY_RE.match(line):
-            skipping = True
-            bracket_depth = line.count("[") - line.count("]")
-            if bracket_depth <= 0:
-                skipping = False
-            continue
-        if skipping:
-            bracket_depth += line.count("[") - line.count("]")
-            if bracket_depth <= 0:
-                skipping = False
-            continue
-        cleaned.append(line)
-    return cleaned
-
-
-def read_text_or_empty(path: Path) -> str:
-    if not path.exists():
-        return ""
-    return path.read_text(encoding="utf-8")
-
-
-def validate_toml_document(content: str, *, label: str) -> None:
-    if tomllib is None:
-        return
-    try:
-        tomllib.loads(content)
-    except tomllib.TOMLDecodeError as exc:
-        raise OrcheError(f"Refusing to write invalid TOML for {label}: {exc}") from exc
-
-
-def write_text_atomically(path: Path, content: str, *, backup_path: Optional[Path] = None) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    temp_path.write_text(content, encoding="utf-8")
-    try:
-        if backup_path is not None and path.exists():
-            shutil.copy2(path, backup_path)
-        temp_path.replace(path)
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            temp_path.unlink()
-
-
-def _project_header_path(line: str) -> Optional[str]:
-    match = TOML_PROJECT_HEADER_RE.match(line)
-    if match is None:
-        return None
-    try:
-        value = json.loads(match.group(1))
-    except json.JSONDecodeError:
-        return None
-    return value if isinstance(value, str) else None
-
-
-def render_project_trust_block(cwd: Path) -> str:
-    return f"[projects.{json.dumps(str(cwd.resolve()))}]\ntrust_level = \"trusted\"\n"
-
-
-def upsert_project_trust(content: str, cwd: Path) -> str:
-    target = str(cwd.resolve())
-    lines = content.splitlines(keepends=True)
-    for index, line in enumerate(lines):
-        if _project_header_path(line) != target:
-            continue
-        section_end = index + 1
-        while section_end < len(lines) and not TOML_TABLE_HEADER_RE.match(lines[section_end]):
-            section_end += 1
-        for trust_index in range(index + 1, section_end):
-            if not TOML_TRUST_LEVEL_RE.match(lines[trust_index]):
-                continue
-            replacement = 'trust_level = "trusted"\n'
-            if lines[trust_index] == replacement:
-                return content
-            lines[trust_index] = replacement
-            return "".join(lines)
-        lines.insert(section_end, 'trust_level = "trusted"\n')
-        return "".join(lines)
-    updated = content
-    if updated and not updated.endswith("\n"):
-        updated += "\n"
-    if updated.strip():
-        updated += "\n"
-    updated += render_project_trust_block(cwd)
-    return updated
-
-
-def upsert_top_level_notify(content: str, notify_line: str) -> str:
-    lines = strip_notify_assignments(content.splitlines(keepends=True))
-    first_table_index = next((index for index, line in enumerate(lines) if TOML_TABLE_HEADER_RE.match(line)), len(lines))
-    prefix = lines[:first_table_index]
-    suffix = lines[first_table_index:]
-    while prefix and not prefix[-1].strip():
-        prefix.pop()
-    while suffix and not suffix[0].strip():
-        suffix.pop(0)
-    updated: List[str] = list(prefix)
-    if updated and not updated[-1].endswith("\n"):
-        updated[-1] += "\n"
-    if updated:
-        updated.append("\n")
-    updated.append(notify_line + "\n")
-    if suffix:
-        updated.append("\n")
-        updated.extend(suffix)
-    return "".join(updated)
-
-
-@contextlib.contextmanager
-def source_config_lock(*, timeout: float = 5.0):
-    ensure_directories()
-    path = locks_dir() / f"{SOURCE_CONFIG_LOCK_NAME}.lock"
-    deadline = time.time() + timeout
-    while True:
-        try:
-            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            break
-        except FileExistsError:
-            if time.time() > deadline:
-                raise OrcheError("Timed out waiting for Codex source config lock")
-            time.sleep(0.1)
-    try:
-        os.write(fd, str(os.getpid()).encode())
-        yield
-    finally:
-        os.close(fd)
-        with contextlib.suppress(FileNotFoundError):
-            path.unlink()
-
-
-def sync_trust_to_source_config(cwd: Path) -> str:
-    config_path = source_codex_config_path()
-    with source_config_lock():
-        original = read_text_or_empty(config_path)
-        if original:
-            validate_toml_document(original, label=str(config_path))
-        updated = upsert_project_trust(original, cwd)
-        if updated != original:
-            validate_toml_document(updated, label=str(config_path))
-            write_text_atomically(
-                config_path,
-                updated,
-                backup_path=source_codex_config_backup_path(),
-            )
-        return updated
-
-
-def prune_managed_codex_home(codex_home: Path) -> None:
-    for name in MANAGED_CODEX_RUNTIME_DIRS:
-        shutil.rmtree(codex_home / name, ignore_errors=True)
-    for pattern in MANAGED_CODEX_RUNTIME_FILE_GLOBS:
-        for path in codex_home.glob(pattern):
-            with contextlib.suppress(OSError):
-                path.unlink()
-
-
-def remove_managed_codex_home(codex_home: str) -> None:
-    normalized = Path(normalize_codex_home(codex_home))
-    candidates: List[Path] = []
-    for candidate in (normalized, normalized.resolve()):
-        if candidate not in candidates:
-            candidates.append(candidate)
-    for candidate in candidates:
-        for _ in range(3):
-            if not candidate.exists():
-                break
-            shutil.rmtree(candidate, ignore_errors=True)
-            if not candidate.exists():
-                break
-            time.sleep(0.1)
-
-
-def rewrite_codex_config(
-    codex_home: Path,
-    *,
-    session: str,
-    cwd: Path,
-    discord_channel_id: Optional[str],
-) -> None:
-    config_toml_path = codex_home / "config.toml"
-    base_content = sync_trust_to_source_config(cwd)
-    notify_line = render_notify_command(
-        default_notify_hook_path(codex_home),
-        session=session,
-        discord_channel_id=discord_channel_id,
-    )
-    updated = upsert_top_level_notify(base_content, notify_line)
-    validate_toml_document(updated, label=str(config_toml_path))
-    write_text_atomically(config_toml_path, updated)
-
-
-def ensure_managed_codex_home(session: str, *, cwd: Path, discord_channel_id: Optional[str]) -> Path:
-    target = default_codex_home_path(session)
-    if not target.exists():
-        if DEFAULT_CODEX_SOURCE_HOME.exists():
-            shutil.copytree(DEFAULT_CODEX_SOURCE_HOME, target)
-        else:
-            target.mkdir(parents=True, exist_ok=True)
-    prune_managed_codex_home(target)
-    write_notify_hook(default_notify_hook_path(target))
-    rewrite_codex_config(target, session=session, cwd=cwd, discord_channel_id=discord_channel_id)
-    return target.resolve()
 
 
 def history_path(session: str) -> Path:
@@ -441,6 +214,10 @@ def meta_path(session: str) -> Path:
 
 def lock_path(session: str) -> Path:
     return locks_dir() / f"{session_key(session)}.lock"
+
+
+def notify_target_lock_path(session: str) -> Path:
+    return locks_dir() / f"{session_key(session)}.notify.lock"
 
 
 def run(
@@ -464,16 +241,7 @@ def run(
 def require_tmux() -> None:
     if shutil.which("tmux"):
         return
-    raise OrcheError("tmux is not installed; smux backend requires tmux")
-
-
-def require_tmux_bridge() -> str:
-    candidate = shutil.which("tmux-bridge")
-    if candidate:
-        return candidate
-    if TMUX_BRIDGE_FALLBACK.exists():
-        return str(TMUX_BRIDGE_FALLBACK)
-    raise OrcheError("tmux-bridge is not installed; run the official smux installer first")
+    raise OrcheError("tmux is not installed; orche requires tmux")
 
 
 def tmux(*args: str, check: bool = True, capture: bool = True) -> subprocess.CompletedProcess[str]:
@@ -481,9 +249,124 @@ def tmux(*args: str, check: bool = True, capture: bool = True) -> subprocess.Com
     return run(["tmux", *args], check=check, capture=capture)
 
 
+def _known_tmux_sessions() -> Tuple[str, ...]:
+    return (TMUX_SESSION, LEGACY_TMUX_SESSION)
+
+
+def _is_orche_tmux_session(name: str) -> bool:
+    session_name = str(name or "").strip()
+    return bool(session_name) and (
+        session_name in _known_tmux_sessions() or session_name.startswith(f"{TMUX_SESSION}-")
+    )
+
+
+def _tmux_has_session(name: str) -> bool:
+    session_name = str(name or "").strip()
+    if not session_name:
+        return False
+    result = tmux("has-session", "-t", session_name, check=False, capture=True)
+    return result.returncode == 0
+
+
+def list_tmux_sessions() -> List[str]:
+    result = tmux("list-sessions", "-F", "#{session_name}", check=False, capture=True)
+    if result.returncode != 0:
+        return []
+    sessions: List[str] = []
+    for line in result.stdout.splitlines():
+        session_name = line.strip()
+        if _is_orche_tmux_session(session_name):
+            sessions.append(session_name)
+    return sessions
+
+
+def _bridge_result(
+    args: Sequence[str],
+    *,
+    returncode: int = 0,
+    stdout: str = "",
+    stderr: str = "",
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(
+        ["tmux-bridge", *args],
+        returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
+def _resolve_bridge_pane(session: str) -> str:
+    session_name = str(session or "").strip()
+    if not session_name:
+        raise OrcheError("session is required")
+    for pane in list_panes():
+        if str(pane.get("pane_title") or "").strip() == session_name:
+            return str(pane.get("pane_id") or "").strip()
+    meta_pane_id = str(load_meta(session_name).get("pane_id") or "").strip()
+    if meta_pane_id and pane_exists(meta_pane_id):
+        return meta_pane_id
+    raise OrcheError(f"Unknown session: {session_name}")
+
+
+def _tmux_bridge_dispatch(*args: str) -> subprocess.CompletedProcess[str]:
+    if not args:
+        raise OrcheError("tmux-bridge command is required")
+    command = args[0]
+    if command == "name":
+        if len(args) != 3:
+            raise OrcheError("tmux-bridge name requires <pane_id> <session>")
+        pane_id, session = args[1], args[2]
+        if not pane_exists(pane_id):
+            raise OrcheError(f"Unknown pane: {pane_id}")
+        tmux("select-pane", "-t", pane_id, "-T", session, check=False, capture=True)
+        return _bridge_result(args)
+    if command == "resolve":
+        if len(args) != 2:
+            raise OrcheError("tmux-bridge resolve requires <session>")
+        pane_id = _resolve_bridge_pane(args[1])
+        return _bridge_result(args, stdout=pane_id)
+    if command == "read":
+        if len(args) != 3:
+            raise OrcheError("tmux-bridge read requires <session> <lines>")
+        session, line_text = args[1], args[2]
+        try:
+            lines = max(int(line_text), 1)
+        except ValueError as exc:
+            raise OrcheError(f"Invalid line count: {line_text}") from exc
+        pane_id = _resolve_bridge_pane(session)
+        return _bridge_result(args, stdout=read_pane(pane_id, lines))
+    if command == "type":
+        if len(args) != 3:
+            raise OrcheError("tmux-bridge type requires <session> <text>")
+        session, text = args[1], args[2]
+        pane_id = _resolve_bridge_pane(session)
+        tmux("send-keys", "-t", pane_id, "-l", text, check=True, capture=True)
+        return _bridge_result(args)
+    if command == "keys":
+        if len(args) < 3:
+            raise OrcheError("tmux-bridge keys requires <session> <key>...")
+        session = args[1]
+        pane_id = _resolve_bridge_pane(session)
+        tmux("send-keys", "-t", pane_id, *args[2:], check=True, capture=True)
+        return _bridge_result(args)
+    raise OrcheError(f"Unsupported tmux-bridge command: {command}")
+
+
 def tmux_bridge(*args: str, check: bool = True, capture: bool = True) -> subprocess.CompletedProcess[str]:
-    bridge = require_tmux_bridge()
-    return run([bridge, *args], check=check, capture=capture)
+    try:
+        result = _tmux_bridge_dispatch(*args)
+    except OrcheError as exc:
+        result = _bridge_result(args, returncode=1, stderr=str(exc))
+        if check:
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                result.args,
+                output=result.stdout,
+                stderr=result.stderr,
+            ) from exc
+    if not capture:
+        return _bridge_result(args, returncode=result.returncode)
+    return result
 
 
 def pane_exists(pane_id: str) -> bool:
@@ -492,37 +375,60 @@ def pane_exists(pane_id: str) -> bool:
 
 
 def tmux_session_exists() -> bool:
-    result = tmux("has-session", "-t", TMUX_SESSION, check=False, capture=True)
-    return result.returncode == 0
+    return bool(list_tmux_sessions())
 
 
-def list_windows() -> List[Dict[str, str]]:
-    if not tmux_session_exists():
-        return []
+def list_windows(target: Optional[str] = None) -> List[Dict[str, str]]:
+    session_names = [target] if target else list_tmux_sessions()
+    windows: List[Dict[str, str]] = []
+    for session_name in session_names:
+        result = tmux(
+            "list-windows",
+            "-t",
+            session_name,
+            "-F",
+            "#{window_id}\t#{window_name}",
+            check=False,
+            capture=True,
+        )
+        if result.returncode != 0:
+            continue
+        for line in result.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) == 2:
+                windows.append({"session_name": session_name, "window_id": parts[0], "window_name": parts[1]})
+    return windows
+
+
+def find_window(name: str, *, target: Optional[str] = None) -> Optional[Dict[str, str]]:
+    for window in list_windows(target):
+        if window["window_name"] == name:
+            return window
+    return None
+
+
+def next_window_index(session_name: str) -> int:
     result = tmux(
         "list-windows",
         "-t",
-        TMUX_SESSION,
+        session_name,
         "-F",
-        "#{window_id}\t#{window_name}",
+        "#{window_index}",
         check=False,
         capture=True,
     )
     if result.returncode != 0:
-        return []
-    windows: List[Dict[str, str]] = []
+        return 0
+    indexes: List[int] = []
     for line in result.stdout.splitlines():
-        parts = line.split("\t")
-        if len(parts) == 2:
-            windows.append({"window_id": parts[0], "window_name": parts[1]})
-    return windows
-
-
-def find_window(name: str) -> Optional[Dict[str, str]]:
-    for window in list_windows():
-        if window["window_name"] == name:
-            return window
-    return None
+        value = line.strip()
+        if not value:
+            continue
+        try:
+            indexes.append(int(value))
+        except ValueError:
+            continue
+    return (max(indexes) + 1) if indexes else 0
 
 
 def list_panes(target: Optional[str] = None) -> List[Dict[str, str]]:
@@ -530,13 +436,11 @@ def list_panes(target: Optional[str] = None) -> List[Dict[str, str]]:
     if target:
         args.extend(["-t", target])
     else:
-        if not tmux_session_exists():
-            return []
-        args.extend(["-t", TMUX_SESSION])
+        args.append("-a")
     args.extend(
         [
             "-F",
-            "#{pane_id}\t#{window_id}\t#{window_name}\t#{pane_dead}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}",
+            "#{session_name}\t#{pane_id}\t#{window_id}\t#{window_name}\t#{pane_dead}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}",
         ]
     )
     result = tmux(*args, check=False, capture=True)
@@ -545,18 +449,21 @@ def list_panes(target: Optional[str] = None) -> List[Dict[str, str]]:
     panes: List[Dict[str, str]] = []
     for line in result.stdout.splitlines():
         parts = line.split("\t")
-        if len(parts) != 8:
+        if len(parts) != 9:
+            continue
+        if not target and not _is_orche_tmux_session(parts[0]):
             continue
         panes.append(
             {
-                "pane_id": parts[0],
-                "window_id": parts[1],
-                "window_name": parts[2],
-                "pane_dead": parts[3],
-                "pane_pid": parts[4],
-                "pane_current_command": parts[5],
-                "pane_current_path": parts[6],
-                "pane_title": parts[7],
+                "session_name": parts[0],
+                "pane_id": parts[1],
+                "window_id": parts[2],
+                "window_name": parts[3],
+                "pane_dead": parts[4],
+                "pane_pid": parts[5],
+                "pane_current_command": parts[6],
+                "pane_current_path": parts[7],
+                "pane_title": parts[8],
             }
         )
     return panes
@@ -577,6 +484,155 @@ def read_pane(pane_id: str, lines: int = DEFAULT_CAPTURE_LINES) -> str:
     return "\n".join(result.stdout.splitlines()[-lines:])
 
 
+def _tmux_value_for_pane(pane_id: str, fmt: str) -> str:
+    result = tmux("display-message", "-p", "-t", pane_id, fmt, check=False, capture=True)
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def pane_cursor_state(pane_id: str) -> Dict[str, str]:
+    raw = _tmux_value_for_pane(
+        pane_id,
+        "#{cursor_x}\t#{cursor_y}\t#{pane_in_mode}\t#{pane_dead}",
+    )
+    parts = raw.split("\t") if raw else []
+    while len(parts) < 4:
+        parts.append("")
+    return {
+        "cursor_x": parts[0],
+        "cursor_y": parts[1],
+        "pane_in_mode": parts[2],
+        "pane_dead": parts[3],
+    }
+
+
+def process_cpu_percent(pid_text: str) -> float:
+    pid = str(pid_text or "").strip()
+    if not pid.isdigit():
+        return 0.0
+    result = run(["ps", "-o", "%cpu=", "-p", pid], check=False, capture=True)
+    if result.returncode != 0:
+        return 0.0
+    value = (result.stdout or "").strip()
+    try:
+        return float(value)
+    except ValueError:
+        return 0.0
+
+
+def process_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _normalize_watchdog_tail(capture: str) -> str:
+    tail = capture.splitlines()[-12:]
+    return compact_text("\n".join(line.rstrip() for line in tail))
+
+
+def _pane_signature(
+    *,
+    tail: str,
+    cursor_x: str,
+    cursor_y: str,
+    pane_in_mode: str,
+    pane_current_command: str,
+) -> str:
+    return "|".join(
+        [
+            tail,
+            cursor_x,
+            cursor_y,
+            pane_in_mode,
+            pane_current_command,
+        ]
+    )
+
+
+def sample_pane_state(
+    plugin: AgentPlugin,
+    pane_id: str,
+    *,
+    capture_lines: int = WATCHDOG_CAPTURE_LINES,
+) -> Dict[str, Any]:
+    resolved_pane_id = str(pane_id or "").strip()
+    info = get_pane_info(resolved_pane_id) if resolved_pane_id else None
+    capture = read_pane(resolved_pane_id, capture_lines) if resolved_pane_id else ""
+    cursor = pane_cursor_state(resolved_pane_id) if resolved_pane_id else {}
+    cpu_percent = process_cpu_percent((info or {}).get("pane_pid", ""))
+    tail = _normalize_watchdog_tail(capture)
+    cursor_x = str(cursor.get("cursor_x") or "")
+    cursor_y = str(cursor.get("cursor_y") or "")
+    pane_in_mode = str(cursor.get("pane_in_mode") or "")
+    pane_dead = str(cursor.get("pane_dead") or (info or {}).get("pane_dead") or "")
+    pane_current_command = str((info or {}).get("pane_current_command") or "")
+    return {
+        "pane_id": resolved_pane_id,
+        "capture": capture,
+        "capture_bytes": len(capture.encode("utf-8")),
+        "tail": tail,
+        "signature": _pane_signature(
+            tail=tail,
+            cursor_x=cursor_x,
+            cursor_y=cursor_y,
+            pane_in_mode=pane_in_mode,
+            pane_current_command=pane_current_command,
+        ),
+        "cursor_x": cursor_x,
+        "cursor_y": cursor_y,
+        "pane_in_mode": pane_in_mode,
+        "pane_dead": pane_dead,
+        "pane_current_command": pane_current_command,
+        "cpu_percent": cpu_percent,
+        "agent_running": bool(resolved_pane_id and is_agent_running(plugin, resolved_pane_id)),
+    }
+
+
+def sample_watchdog_state(session: str, *, pane_id: str = "") -> Dict[str, Any]:
+    meta = load_meta(session)
+    pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else {}
+    resolved_pane_id = str(
+        pane_id or bridge_resolve(session) or pending_turn.get("pane_id") or meta.get("pane_id") or ""
+    ).strip()
+    info = get_pane_info(resolved_pane_id) if resolved_pane_id else None
+    plugin_name = str(meta.get("agent") or "codex")
+    plugin = get_agent(plugin_name)
+    sample = sample_pane_state(plugin, resolved_pane_id, capture_lines=WATCHDOG_CAPTURE_LINES)
+    if info is not None and not sample.get("pane_current_command"):
+        sample["pane_current_command"] = str(info.get("pane_current_command") or "")
+    return sample
+
+
+def observable_progress_detected(
+    previous_signature: str,
+    previous_cursor: tuple[str, str],
+    sample: Mapping[str, Any],
+) -> bool:
+    current_cursor = (str(sample.get("cursor_x") or ""), str(sample.get("cursor_y") or ""))
+    return (
+        not previous_signature
+        or previous_signature != str(sample.get("signature") or "")
+        or previous_cursor != current_cursor
+        or float(sample.get("cpu_percent") or 0.0) >= WATCHDOG_ACTIVE_CPU_THRESHOLD
+    )
+
+
+def recent_capture_excerpt(capture: str, *, lines: int = NOTIFY_TAIL_LINES, max_chars: int = 1200) -> str:
+    excerpt = "\n".join(capture.splitlines()[-max(lines, 1) :]).strip()
+    if len(excerpt) <= max_chars:
+        return excerpt
+    trimmed = excerpt[-max_chars:].lstrip()
+    if not trimmed:
+        return ""
+    return f"...\n{trimmed}"
+
+
 def save_meta(session: str, meta: Dict[str, Any]) -> None:
     ensure_directories()
     meta_path(session).write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -591,6 +647,89 @@ def load_meta(session: str) -> Dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def validate_discord_channel_id(value: str, *, option_name: str = "--channel-id") -> str:
+    try:
+        return common_validate_discord_channel_id(value)
+    except ValueError as exc:
+        message = str(exc)
+        if message.startswith("--discord-channel-id"):
+            message = message.replace("--discord-channel-id", option_name, 1)
+        raise OrcheError(message) from exc
+
+
+def validate_notify_provider(value: str, *, option_name: str = "--notify-to") -> str:
+    provider = str(value or "").strip()
+    if not provider:
+        raise OrcheError(f"{option_name} is required")
+    if provider not in SUPPORTED_NOTIFY_PROVIDERS:
+        supported = ", ".join(SUPPORTED_NOTIFY_PROVIDERS)
+        raise OrcheError(f"{option_name} must be one of: {supported}")
+    return provider
+
+
+def _read_notify_binding(payload: Mapping[str, Any]) -> Dict[str, str]:
+    binding = payload.get("notify_binding")
+    if isinstance(binding, Mapping):
+        provider = str(binding.get("provider") or "").strip()
+        target = str(binding.get("target") or "").strip()
+        if provider == "discord" and target.isdigit():
+            return {
+                "provider": "discord",
+                "target": target,
+                "session": str(binding.get("session") or derive_discord_session(target)).strip(),
+            }
+        if provider == "tmux-bridge" and target:
+            return {
+                "provider": "tmux-bridge",
+                "target": target,
+            }
+    legacy_routes = payload.get("notify_routes")
+    if isinstance(legacy_routes, Mapping):
+        discord_route = legacy_routes.get("discord")
+        if isinstance(discord_route, Mapping):
+            target = str(discord_route.get("channel_id") or "").strip()
+            if target.isdigit():
+                return {
+                    "provider": "discord",
+                    "target": target,
+                    "session": str(discord_route.get("session") or derive_discord_session(target)).strip(),
+                }
+        tmux_route = legacy_routes.get("tmux-bridge")
+        if isinstance(tmux_route, Mapping):
+            target = str(tmux_route.get("target_session") or tmux_route.get("target") or "").strip()
+            if target:
+                return {
+                    "provider": "tmux-bridge",
+                    "target": target,
+                }
+    discord_channel_id = str(payload.get("discord_channel_id") or "").strip()
+    if discord_channel_id.isdigit():
+        return {
+            "provider": "discord",
+            "target": discord_channel_id,
+            "session": str(payload.get("discord_session") or derive_discord_session(discord_channel_id)).strip(),
+        }
+    return {}
+
+
+def build_notify_binding(provider: str, target: str) -> Dict[str, str]:
+    normalized_provider = validate_notify_provider(provider)
+    normalized_target = str(target or "").strip()
+    if normalized_provider == "discord":
+        channel_id = validate_discord_channel_id(normalized_target, option_name="--notify-target")
+        return {
+            "provider": "discord",
+            "target": channel_id,
+            "session": derive_discord_session(channel_id),
+        }
+    if not normalized_target:
+        raise OrcheError("--notify-target is required for --notify-to tmux-bridge")
+    return {
+        "provider": "tmux-bridge",
+        "target": normalized_target,
+    }
 
 
 def remove_meta(session: str) -> None:
@@ -642,6 +781,25 @@ def list_sessions() -> List[Dict[str, Any]]:
     return sessions
 
 
+def session_exists(session: str) -> bool:
+    session_name = str(session or "").strip()
+    if not session_name:
+        return False
+    meta = load_meta(session_name)
+    if meta:
+        return True
+    if bridge_resolve(session_name):
+        return True
+    return _tmux_has_session(tmux_session_name(session_name))
+
+
+def _current_tmux_value(fmt: str) -> str:
+    result = tmux("display-message", "-p", fmt, check=False, capture=True)
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
 def load_config() -> Dict[str, Any]:
     ensure_directories()
     default = {
@@ -653,8 +811,12 @@ def load_config() -> Dict[str, Any]:
         "notify_enabled": True,
         "session": "",
         "discord_session": "",
+        "runtime_home": "",
+        "runtime_home_managed": False,
+        "runtime_label": "",
         "codex_home": "",
         "codex_home_managed": False,
+        "tmux_session": "",
     }
     path = config_path()
     if not path.exists():
@@ -676,13 +838,6 @@ def save_config(config: Dict[str, Any]) -> None:
     write_text_atomically(config_path(), payload)
 
 
-def validate_discord_channel_id(value: str) -> str:
-    channel_id = re.sub(r"\s+", "", value or "")
-    if not channel_id or not channel_id.isdigit():
-        raise OrcheError("--discord-channel-id must be a numeric Discord channel ID")
-    return channel_id
-
-
 def derive_discord_session(channel_id: str) -> str:
     return f"agent:main:discord:channel:{channel_id}"
 
@@ -697,11 +852,6 @@ def config_key_field(key: str) -> str:
 
 def get_config_value(key: str) -> str:
     config = load_config()
-    if key == "discord.channel-id":
-        value = str(config.get("discord_channel_id") or config.get("codex_turn_complete_channel_id") or "").strip()
-        if value:
-            return validate_discord_channel_id(value)
-        return ""
     field = config_key_field(key)
     value = config.get(field)
     if key == "notify.enabled":
@@ -713,12 +863,7 @@ def set_config_value(key: str, value: str) -> Dict[str, Any]:
     config = load_config()
     field = config_key_field(key)
     normalized = value
-    if key == "discord.channel-id":
-        normalized = validate_discord_channel_id(value)
-        config["codex_turn_complete_channel_id"] = normalized
-        config["discord_channel_id"] = normalized
-        config["discord_session"] = derive_discord_session(normalized)
-    elif key == "notify.enabled":
+    if key == "notify.enabled":
         lowered = value.strip().lower()
         if lowered in {"1", "true", "yes", "on"}:
             normalized = True
@@ -743,30 +888,31 @@ def update_runtime_config(
     cwd: Path,
     agent: str,
     pane_id: str,
-    codex_home: Optional[str] = None,
-    codex_home_managed: Optional[bool] = None,
-    discord_channel_id: Optional[str] = None,
-    discord_session: Optional[str] = None,
+    tmux_session: str = "",
+    runtime_home: Optional[str] = None,
+    runtime_home_managed: Optional[bool] = None,
+    runtime_label: str = "",
 ) -> Dict[str, Any]:
     config = load_config()
     config["_comment"] = CONFIG_COMMENT
     config.pop("orch_session", None)
     config.pop("parent_session_key", None)
-    if discord_channel_id:
-        normalized_channel_id = validate_discord_channel_id(discord_channel_id)
-        config["codex_turn_complete_channel_id"] = normalized_channel_id
-        config["discord_channel_id"] = normalized_channel_id
     config["session"] = session
-    if discord_session:
-        config["discord_session"] = discord_session
-    elif not config.get("discord_session") and str(config.get("codex_turn_complete_channel_id") or "").isdigit():
-        config["discord_session"] = derive_discord_session(str(config["codex_turn_complete_channel_id"]))
     config["cwd"] = str(cwd)
     config["agent"] = agent
     config["pane_id"] = pane_id
-    config["codex_home"] = normalize_codex_home(codex_home)
-    if codex_home_managed is not None:
-        config["codex_home_managed"] = bool(codex_home_managed)
+    config["tmux_session"] = str(tmux_session or "").strip()
+    normalized_runtime_home = normalize_runtime_home(runtime_home)
+    config["runtime_home"] = normalized_runtime_home
+    if runtime_home_managed is not None:
+        config["runtime_home_managed"] = bool(runtime_home_managed)
+    config["runtime_label"] = runtime_label
+    if agent == "codex":
+        config["codex_home"] = normalized_runtime_home
+        config["codex_home_managed"] = bool(runtime_home_managed)
+    else:
+        config["codex_home"] = ""
+        config["codex_home_managed"] = False
     config["updated_at"] = time.time()
     save_config(config)
     return config
@@ -784,6 +930,30 @@ def session_lock(session: str, *, timeout: float = 5.0):
         except FileExistsError:
             if time.time() > deadline:
                 raise OrcheError(f"Timed out waiting for session lock: {session}")
+            time.sleep(0.1)
+    try:
+        os.write(fd, str(os.getpid()).encode())
+        yield
+    finally:
+        os.close(fd)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+@contextlib.contextmanager
+def target_session_io_lock(session: str, *, timeout: float = 5.0):
+    ensure_directories()
+    path = notify_target_lock_path(session)
+    deadline = time.time() + timeout
+    while True:
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            if time.time() > deadline:
+                raise OrcheError(f"Timed out waiting for notify target lock: {session}")
             time.sleep(0.1)
     try:
         os.write(fd, str(os.getpid()).encode())
@@ -828,18 +998,128 @@ def bridge_keys(session: str, keys: Union[Iterable[str], str]) -> None:
     tmux_bridge("keys", session, *values, check=True, capture=True)
 
 
-def ensure_window(name: str, cwd: Path) -> Dict[str, str]:
-    window = find_window(name)
-    if window is not None:
-        return window
-    if tmux_session_exists():
-        tmux("new-window", "-d", "-t", TMUX_SESSION, "-n", name, "-c", str(cwd), check=True, capture=True)
+def attach_session(session: str, *, pane_id: str = "") -> str:
+    meta = load_meta(session)
+    resolved_pane_id = pane_id or bridge_resolve(session) or str(meta.get("pane_id") or "")
+    info = get_pane_info(resolved_pane_id) if resolved_pane_id else None
+    target_tmux_session = str(meta.get("tmux_session") or "").strip()
+    if info is not None:
+        target_tmux_session = str(info.get("session_name") or target_tmux_session).strip()
+    if not target_tmux_session:
+        target_tmux_session = tmux_session_name(session)
+    if not _tmux_has_session(target_tmux_session):
+        raise OrcheError(f"Tmux session not found for session: {session}")
+    if os.environ.get("TMUX"):
+        result = tmux("switch-client", "-t", target_tmux_session, check=False, capture=True)
+        if result.returncode != 0:
+            tmux("attach-session", "-t", target_tmux_session, check=True, capture=False)
     else:
-        tmux("new-session", "-d", "-s", TMUX_SESSION, "-n", name, "-c", str(cwd), check=True, capture=True)
-    created = find_window(name)
-    if created is None:
-        raise OrcheError(f"Failed to create tmux window for {name}")
-    return created
+        tmux("attach-session", "-t", target_tmux_session, check=True, capture=False)
+    return target_tmux_session
+
+
+def list_tmux_session_clients(session_name: str) -> List[str]:
+    if not _tmux_has_session(session_name):
+        return []
+    result = tmux("list-clients", "-t", session_name, "-F", "#{client_tty}", check=False, capture=True)
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def deliver_notify_to_session(session: str, prompt: str) -> str:
+    target_session = session.strip()
+    if not target_session:
+        raise OrcheError("notify target session is required")
+    if not prompt:
+        raise OrcheError("notify prompt is required")
+    with target_session_io_lock(target_session):
+        pane_id = bridge_resolve(target_session)
+        if not pane_id:
+            raise OrcheError(f"notify target session not found: {target_session}")
+        bridge_type(target_session, prompt)
+        bridge_keys(target_session, ["Enter"])
+        return pane_id
+
+
+class _BridgeAdapter:
+    def type(self, session: str, text: str) -> None:
+        bridge_type(session, text)
+
+    def keys(self, session: str, keys: Sequence[str]) -> None:
+        bridge_keys(session, list(keys))
+
+
+BRIDGE = _BridgeAdapter()
+
+
+def supported_agent_names() -> Tuple[str, ...]:
+    return supported_agents()
+
+
+def get_agent(name: str) -> AgentPlugin:
+    try:
+        return get_agent_plugin(name)
+    except ValueError as exc:
+        raise OrcheError(str(exc)) from exc
+
+
+def prepare_managed_runtime(
+    plugin: AgentPlugin,
+    session: str,
+    *,
+    cwd: Path,
+    discord_channel_id: Optional[str],
+) -> AgentRuntime:
+    try:
+        if plugin.name == "codex":
+            codex_agent_module.DEFAULT_RUNTIME_HOME_ROOT = DEFAULT_CODEX_HOME_ROOT
+            codex_agent_module.DEFAULT_CODEX_SOURCE_HOME = DEFAULT_CODEX_SOURCE_HOME
+        elif plugin.name == "claude":
+            claude_agent_module.DEFAULT_RUNTIME_HOME_ROOT = default_claude_home_path(session).parent
+        return plugin.ensure_managed_runtime(
+            session,
+            cwd=cwd,
+            discord_channel_id=discord_channel_id,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise OrcheError(str(exc)) from exc
+
+
+def runtime_home_from_meta(meta: Dict[str, Any]) -> str:
+    return normalize_runtime_home(meta.get("runtime_home") or meta.get("codex_home") or "")
+
+
+def runtime_home_managed_from_meta(meta: Dict[str, Any]) -> bool:
+    if "runtime_home_managed" in meta:
+        return bool(meta.get("runtime_home_managed"))
+    return bool(meta.get("codex_home_managed"))
+
+
+def runtime_label_from_meta(meta: Dict[str, Any], plugin: AgentPlugin) -> str:
+    return str(meta.get("runtime_label") or plugin.runtime_label)
+
+
+def apply_runtime_to_meta(meta: Dict[str, Any], *, agent: str, runtime: AgentRuntime) -> None:
+    meta["runtime_home"] = normalize_runtime_home(runtime.home)
+    meta["runtime_home_managed"] = bool(runtime.managed)
+    meta["runtime_label"] = runtime.label
+    if agent == "codex":
+        meta["codex_home"] = meta["runtime_home"]
+        meta["codex_home_managed"] = meta["runtime_home_managed"]
+    else:
+        meta["codex_home"] = ""
+        meta["codex_home_managed"] = False
+
+
+def ensure_tmux_session(session: str, cwd: Path) -> str:
+    name = tmux_session_name(session)
+    if _tmux_has_session(name):
+        return name
+    tmux("new-session", "-d", "-s", name, "-n", window_name(session), "-c", str(cwd), check=True, capture=True)
+    if not _tmux_has_session(name):
+        raise OrcheError(f"Failed to create tmux session for {session}")
+    return name
 
 
 def normalize_pane(session: str, cwd: Path, pane: Dict[str, str]) -> str:
@@ -866,6 +1146,7 @@ def ensure_pane(session: str, cwd: Path, agent: str) -> str:
                         "session": session,
                         "cwd": str(cwd),
                         "agent": agent,
+                        "tmux_session": info["session_name"],
                         "pane_id": pane_id,
                         "window_id": info["window_id"],
                         "window_name": info["window_name"],
@@ -875,11 +1156,8 @@ def ensure_pane(session: str, cwd: Path, agent: str) -> str:
                 save_meta(session, meta)
                 return pane_id
 
-        window = ensure_window(window_name(session), cwd)
-        panes = list_panes(window["window_id"])
-        if not panes:
-            tmux("split-window", "-d", "-t", window["window_id"], "-c", str(cwd), check=True, capture=True)
-            panes = list_panes(window["window_id"])
+        tmux_name = ensure_tmux_session(session, cwd)
+        panes = list_panes(tmux_name)
         if not panes:
             raise OrcheError(f"Failed to create tmux pane for {session}")
         pane = panes[0]
@@ -890,6 +1168,7 @@ def ensure_pane(session: str, cwd: Path, agent: str) -> str:
                 "session": session,
                 "cwd": str(cwd),
                 "agent": agent,
+                "tmux_session": pane["session_name"],
                 "pane_id": pane_id,
                 "window_id": pane["window_id"],
                 "window_name": pane["window_name"],
@@ -929,69 +1208,136 @@ def process_descendants(root_pid: int) -> List[str]:
     return commands
 
 
-def is_codex_running(pane_id: str) -> bool:
+def is_agent_running(plugin: AgentPlugin, pane_id: str) -> bool:
     info = get_pane_info(pane_id)
     if info is None or info.get("pane_dead") == "1":
         return False
     command = (info.get("pane_current_command") or "").lower()
-    if command == "codex":
-        return True
     try:
         pane_pid = int(info.get("pane_pid") or "0")
     except ValueError:
         return False
-    for proc in process_descendants(pane_pid):
-        lowered = proc.lower()
-        if "codex" in lowered or "@openai/codex" in lowered:
-            return True
-    return False
+    return plugin.matches_process(command, process_descendants(pane_pid))
 
 
-def build_codex_command(
-    cwd: Path,
-    *,
-    approve_all: bool,
-    codex_home: Optional[str] = None,
-    session: Optional[str] = None,
-    discord_channel_id: Optional[str] = None,
-) -> str:
-    _ = approve_all
-    prefix: List[str] = [f"cd {shlex.quote(str(cwd))}"]
-    normalized_codex_home = normalize_codex_home(codex_home)
-    if normalized_codex_home:
-        prefix.append(f"mkdir -p {shlex.quote(normalized_codex_home)}")
-        prefix.append(f"export CODEX_HOME={shlex.quote(normalized_codex_home)}")
-    if session:
-        prefix.append(f"export ORCHE_SESSION={shlex.quote(session)}")
-    if discord_channel_id:
-        prefix.append(f"export ORCHE_DISCORD_CHANNEL_ID={shlex.quote(validate_discord_channel_id(discord_channel_id))}")
-    command = ["codex", "--no-alt-screen", "-C", str(cwd)]
-    command.append("--dangerously-bypass-approvals-and-sandbox")
-    prefix.append(f"exec {' '.join(shlex.quote(part) for part in command)}")
-    return " && ".join(prefix)
-
-
-def capture_has_ready_surface(capture: str, cwd: Path) -> bool:
-    lowered = capture.lower()
-    has_brand = "openai codex" in lowered or "\ncodex" in lowered or " codex" in lowered
-    has_context = str(cwd) in capture or any(hint.lower() in lowered for hint in READY_SURFACE_HINTS)
-    return has_brand and has_context
-
-
-def wait_for_codex_ready(pane_id: str, cwd: Path, *, timeout: float = STARTUP_TIMEOUT) -> str:
+def wait_for_agent_ready(plugin: AgentPlugin, pane_id: str, cwd: Path, *, timeout: float = STARTUP_TIMEOUT) -> str:
     deadline = time.time() + timeout
     ready_streak = 0
+    last_signature = ""
+    last_cursor = ("", "")
+    last_sample: Dict[str, Any] = {}
+    while time.time() <= deadline:
+        sample = sample_pane_state(plugin, pane_id, capture_lines=DEFAULT_CAPTURE_LINES)
+        capture = str(sample.get("capture") or "")
+        if any(prompt in capture for prompt in plugin.login_prompts):
+            raise OrcheError(f"{plugin.display_name} is not logged in inside the tmux pane")
+        if str(sample.get("pane_dead") or "") == "1":
+            raise OrcheError(f"{plugin.display_name} pane exited before becoming ready: {pane_id}")
+        ready_candidate = bool(sample.get("agent_running")) and plugin.capture_has_ready_surface(capture, cwd)
+        ready_streak = ready_streak + 1 if ready_candidate else 0
+        if ready_streak >= plugin.ready_streak_required:
+            return pane_id
+        _ = observable_progress_detected(last_signature, last_cursor, sample)
+        last_signature = str(sample.get("signature") or "")
+        last_cursor = (str(sample.get("cursor_x") or ""), str(sample.get("cursor_y") or ""))
+        last_sample = sample
+        time.sleep(1.0)
+    if bool(last_sample.get("agent_running")):
+        raise AgentStartupBlockedError(f"{plugin.display_name} startup blocked before reaching ready state in {pane_id}")
+    raise OrcheError(f"Timed out waiting for {plugin.display_name} to become ready in {pane_id}")
+
+
+def wait_for_agent_process_start(
+    plugin: AgentPlugin,
+    pane_id: str,
+    *,
+    timeout: float = STARTUP_TIMEOUT,
+) -> str:
+    deadline = time.time() + timeout
+    last_capture = ""
     while time.time() <= deadline:
         capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES)
-        if "Login with ChatGPT" in capture or "Please login" in capture:
-            raise OrcheError("Codex is not logged in inside the tmux pane")
-        running = is_codex_running(pane_id)
-        ready_candidate = running and capture_has_ready_surface(capture, cwd)
-        ready_streak = ready_streak + 1 if ready_candidate else 0
-        if ready_streak >= READY_STREAK_REQUIRED:
+        last_capture = capture
+        launch_error = extract_launch_error(capture)
+        if launch_error:
+            raise OrcheError(launch_error)
+        if any(prompt in capture for prompt in plugin.login_prompts):
             return pane_id
-        time.sleep(1.0)
-    raise OrcheError(f"Timed out waiting for Codex to become ready in {pane_id}")
+        info = get_pane_info(pane_id)
+        if info is None or info.get("pane_dead") == "1":
+            launch_error = extract_launch_error(last_capture)
+            if launch_error:
+                raise OrcheError(launch_error)
+            raise OrcheError(f"{plugin.display_name} pane exited before launch completed: {pane_id}")
+        if is_agent_running(plugin, pane_id):
+            return pane_id
+        time.sleep(0.5)
+    launch_error = extract_launch_error(last_capture)
+    if launch_error:
+        raise OrcheError(launch_error)
+    if last_capture.strip():
+        return pane_id
+    raise OrcheError(f"Timed out waiting for {plugin.display_name} process to start in {pane_id}")
+
+
+def ensure_agent_running(
+    plugin: AgentPlugin,
+    session: str,
+    cwd: Path,
+    pane_id: str,
+    *,
+    approve_all: bool = False,
+    runtime: Optional[AgentRuntime] = None,
+    discord_channel_id: Optional[str] = None,
+) -> str:
+    if is_agent_running(plugin, pane_id):
+        return pane_id
+    approve_all = True
+    info = get_pane_info(pane_id)
+    if info is None:
+        raise OrcheError(f"Pane disappeared before {plugin.display_name} launch: {pane_id}")
+    try:
+        launch_command = plugin.build_launch_command(
+            approve_all=approve_all,
+            cwd=cwd,
+            runtime=runtime or AgentRuntime(label=plugin.runtime_label),
+            session=session,
+            discord_channel_id=discord_channel_id,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise OrcheError(str(exc)) from exc
+    tmux(
+        "respawn-pane",
+        "-k",
+        "-t",
+        pane_id,
+        "-c",
+        str(cwd),
+        launch_command,
+        check=True,
+        capture=True,
+    )
+    pane_id = wait_for_agent_process_start(plugin, pane_id)
+    bridge_name_pane(pane_id, session)
+    meta = load_meta(session)
+    meta.update(
+        {
+            "backend": BACKEND,
+            "session": session,
+            "cwd": str(cwd),
+            "pane_id": pane_id,
+            "agent_started_at": time.time(),
+            "agent_approve_all": approve_all,
+            "last_seen_at": time.time(),
+        }
+    )
+    apply_runtime_to_meta(meta, agent=plugin.name, runtime=runtime or AgentRuntime(label=plugin.runtime_label))
+    save_meta(session, meta)
+    return pane_id
+
+
+def is_codex_running(pane_id: str) -> bool:
+    return is_agent_running(get_agent("codex"), pane_id)
 
 
 def ensure_codex_running(
@@ -1003,50 +1349,15 @@ def ensure_codex_running(
     codex_home: Optional[str] = None,
     discord_channel_id: Optional[str] = None,
 ) -> str:
-    if is_codex_running(pane_id):
-        return pane_id
-    approve_all = True
-    info = get_pane_info(pane_id)
-    if info is None:
-        raise OrcheError(f"Pane disappeared before Codex launch: {pane_id}")
-    if info.get("pane_dead") == "1":
-        tmux("respawn-pane", "-k", "-t", pane_id, "-c", str(cwd), check=True, capture=True)
-    else:
-        tmux("send-keys", "-t", pane_id, "C-c", check=False, capture=True)
-        time.sleep(0.2)
-    tmux(
-        "send-keys",
-        "-t",
+    return ensure_agent_running(
+        get_agent("codex"),
+        session,
+        cwd,
         pane_id,
-        "-l",
-        build_codex_command(
-            cwd,
-            approve_all=approve_all,
-            codex_home=codex_home,
-            session=session,
-            discord_channel_id=discord_channel_id,
-        ),
-        check=True,
-        capture=True,
+        approve_all=approve_all,
+        runtime=AgentRuntime(home=normalize_codex_home(codex_home), managed=False, label=get_agent("codex").runtime_label),
+        discord_channel_id=discord_channel_id,
     )
-    tmux("send-keys", "-t", pane_id, "Enter", check=True, capture=True)
-    pane_id = wait_for_codex_ready(pane_id, cwd)
-    bridge_name_pane(pane_id, session)
-    meta = load_meta(session)
-    meta.update(
-        {
-            "backend": BACKEND,
-            "session": session,
-            "cwd": str(cwd),
-            "pane_id": pane_id,
-            "codex_home": normalize_codex_home(codex_home),
-            "codex_started_at": time.time(),
-            "codex_approve_all": approve_all,
-            "last_seen_at": time.time(),
-        }
-    )
-    save_meta(session, meta)
-    return pane_id
 
 
 def append_action_history(session: str, cwd: Path, agent: str, action: str, **fields: Any) -> None:
@@ -1064,17 +1375,131 @@ def append_action_history(session: str, cwd: Path, agent: str, action: str, **fi
     )
 
 
-def ensure_session(
+def ensure_managed_codex_home(session: str, *, cwd: Path, discord_channel_id: Optional[str]) -> Path:
+    codex_agent_module.DEFAULT_RUNTIME_HOME_ROOT = DEFAULT_CODEX_HOME_ROOT
+    codex_agent_module.DEFAULT_CODEX_SOURCE_HOME = DEFAULT_CODEX_SOURCE_HOME
+    runtime = prepare_managed_runtime(get_agent("codex"), session, cwd=cwd, discord_channel_id=discord_channel_id)
+    return Path(runtime.home)
+
+
+def ensure_managed_claude_home(session: str, *, cwd: Path, discord_channel_id: Optional[str]) -> Path:
+    runtime = prepare_managed_runtime(get_agent("claude"), session, cwd=cwd, discord_channel_id=discord_channel_id)
+    return Path(runtime.home)
+
+
+def remove_managed_codex_home(codex_home: str) -> None:
+    if codex_home:
+        remove_runtime_home(codex_home)
+
+
+def session_launch_mode(meta: Mapping[str, Any]) -> str:
+    mode = str(meta.get("launch_mode") or "").strip()
+    return mode or "managed"
+
+
+def native_cli_args_from_meta(meta: Mapping[str, Any]) -> List[str]:
+    raw_args = meta.get("native_cli_args")
+    if not isinstance(raw_args, list):
+        return []
+    values: List[str] = []
+    for value in raw_args:
+        text = str(value)
+        if text:
+            values.append(text)
+    return values
+
+
+def build_native_agent_launch_command(
+    plugin: AgentPlugin,
+    *,
+    session: str,
+    cwd: Path,
+    cli_args: Sequence[str],
+) -> str:
+    command = [plugin.name, *[str(value) for value in cli_args]]
+    prefix = [f"cd {shlex.quote(str(cwd))}"]
+    orche_shim = ensure_orche_shim()
+    prefix.append(f"export ORCHE_BIN={shlex.quote(str(orche_shim))}")
+    prefix.append(f"export PATH={shlex.quote(str(orche_shim.parent))}:$PATH")
+    if session:
+        prefix.append(f"export ORCHE_SESSION={shlex.quote(session)}")
+    launch_error = (
+        f"{LAUNCH_ERROR_PREFIX} {plugin.display_name} CLI not found in PATH. "
+        f"Install {plugin.name} or add it to PATH."
+    )
+    prefix.append(
+        "if ! command -v "
+        f"{shlex.quote(plugin.name)} >/dev/null 2>&1; "
+        f"then printf '%s\\n' {shlex.quote(launch_error)} >&2; sleep 2; exit 127; fi"
+    )
+    prefix.append(f"exec {' '.join(shlex.quote(part) for part in command)}")
+    return " && ".join(prefix)
+
+
+def extract_launch_error(capture: str) -> str:
+    for line in capture.splitlines():
+        text = str(line or "").strip()
+        if text.startswith(LAUNCH_ERROR_PREFIX):
+            return text[len(LAUNCH_ERROR_PREFIX) :].strip()
+    return ""
+
+
+def ensure_native_agent_running(
+    plugin: AgentPlugin,
+    session: str,
+    cwd: Path,
+    pane_id: str,
+    *,
+    cli_args: Sequence[str],
+) -> str:
+    if is_agent_running(plugin, pane_id):
+        return pane_id
+    info = get_pane_info(pane_id)
+    if info is None:
+        raise OrcheError(f"Pane disappeared before {plugin.display_name} launch: {pane_id}")
+    launch_command = build_native_agent_launch_command(
+        plugin,
+        session=session,
+        cwd=cwd,
+        cli_args=cli_args,
+    )
+    tmux(
+        "respawn-pane",
+        "-k",
+        "-t",
+        pane_id,
+        "-c",
+        str(cwd),
+        launch_command,
+        check=True,
+        capture=True,
+    )
+    pane_id = wait_for_agent_process_start(plugin, pane_id)
+    bridge_name_pane(pane_id, session)
+    meta = load_meta(session)
+    meta.update(
+        {
+            "backend": BACKEND,
+            "session": session,
+            "cwd": str(cwd),
+            "pane_id": pane_id,
+            "agent_started_at": time.time(),
+            "last_seen_at": time.time(),
+        }
+    )
+    save_meta(session, meta)
+    return pane_id
+
+
+def ensure_native_session(
     session: str,
     cwd: Path,
     agent: str,
     *,
-    approve_all: bool = False,
-    codex_home: Optional[str] = None,
-    discord_channel_id: Optional[str] = None,
-    discord_session: Optional[str] = None,
+    cli_args: Sequence[str] = (),
 ) -> str:
     cwd = cwd.resolve()
+    plugin = get_agent(agent)
     existing_meta = load_meta(session)
     existing_cwd = Path(str(existing_meta.get("cwd") or "")).resolve() if existing_meta.get("cwd") else None
     if existing_cwd is not None and existing_cwd != cwd:
@@ -1082,48 +1507,658 @@ def ensure_session(
             f"Session {session} is already bound to cwd={existing_cwd}. "
             "Use the same --cwd or close the session and create a new one."
         )
-    resolved_discord_channel_id = discord_channel_id or str(existing_meta.get("discord_channel_id") or "")
-    resolved_discord_session = (
-        discord_session
-        or str(existing_meta.get("discord_session") or "")
-        or (derive_discord_session(resolved_discord_channel_id) if resolved_discord_channel_id else "")
-    )
-    managed_codex_home = False
-    if codex_home:
-        resolved_codex_home = normalize_codex_home(codex_home)
-    elif existing_meta.get("codex_home"):
-        resolved_codex_home = normalize_codex_home(str(existing_meta.get("codex_home") or ""))
-        managed_codex_home = bool(existing_meta.get("codex_home_managed"))
-    else:
-        resolved_codex_home = str(
-            ensure_managed_codex_home(
-                session,
-                cwd=cwd,
-                discord_channel_id=resolved_discord_channel_id,
-            )
-        )
-        managed_codex_home = True
-    if managed_codex_home:
-        resolved_codex_home = str(
-            ensure_managed_codex_home(
-                session,
-                cwd=cwd,
-                discord_channel_id=resolved_discord_channel_id,
-            )
-        )
-    existing_codex_home = normalize_codex_home(str(existing_meta.get("codex_home") or ""))
-    if existing_codex_home and resolved_codex_home and existing_codex_home != resolved_codex_home:
+    existing_agent = str(existing_meta.get("agent") or "").strip()
+    if existing_agent and existing_agent != plugin.name:
         raise OrcheError(
-            f"Session {session} is already bound to codex_home={existing_codex_home}. "
-            "Use the same --codex-home or close the session and create a new one."
+            f"Session {session} is already bound to agent={existing_agent}. "
+            "Close the session and create a new one for a different agent."
+        )
+    if existing_meta and session_launch_mode(existing_meta) != "native":
+        raise OrcheError(
+            f"Session {session} is already managed by orche open. "
+            "Use orche open without raw agent args for managed sessions, or close the session and recreate it."
+        )
+    provided_cli_args = [str(value) for value in cli_args]
+    existing_cli_args = native_cli_args_from_meta(existing_meta)
+    if existing_meta and provided_cli_args and provided_cli_args != existing_cli_args:
+        raise OrcheError(
+            f"Session {session} is already bound to native args={existing_cli_args!r}. "
+            "Use the same shortcut args or close the session and create a new one."
+        )
+    resolved_cli_args = existing_cli_args or provided_cli_args
+    pane_id = ensure_pane(session, cwd, agent)
+    pane_id = ensure_native_agent_running(
+        plugin,
+        session,
+        cwd,
+        pane_id,
+        cli_args=resolved_cli_args,
+    )
+    meta = load_meta(session)
+    meta.update(
+        {
+            "backend": BACKEND,
+            "session": session,
+            "cwd": str(cwd),
+            "agent": agent,
+            "pane_id": pane_id,
+            "launch_mode": "native",
+            "native_cli_args": list(resolved_cli_args),
+            "last_seen_at": time.time(),
+            "runtime_home": "",
+            "runtime_home_managed": False,
+            "runtime_label": "",
+            "codex_home": "",
+            "codex_home_managed": False,
+        }
+    )
+    meta.pop("discord_channel_id", None)
+    meta.pop("discord_session", None)
+    meta.pop("notify_routes", None)
+    meta.pop("notify_binding", None)
+    save_meta(session, meta)
+    update_runtime_config(
+        session=session,
+        cwd=cwd,
+        agent=agent,
+        pane_id=pane_id,
+        tmux_session=str(meta.get("tmux_session") or ""),
+        runtime_home="",
+        runtime_home_managed=False,
+        runtime_label="",
+    )
+    return pane_id
+
+
+def _turn_matches(turn: Mapping[str, Any], *, turn_id: str = "", prompt: str = "") -> bool:
+    if turn_id and str(turn.get("turn_id") or "") == str(turn_id):
+        return True
+    if prompt and str(turn.get("prompt") or "") == str(prompt):
+        return True
+    return False
+
+
+def _current_turn_entry(
+    meta: Mapping[str, Any],
+    turn_id: str = "",
+    *,
+    prompt: str = "",
+    allow_fallback: bool = True,
+) -> Tuple[str, Dict[str, Any]]:
+    pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else None
+    last_completed_turn = meta.get("last_completed_turn") if isinstance(meta.get("last_completed_turn"), dict) else None
+    if turn_id or prompt:
+        if pending_turn and _turn_matches(pending_turn, turn_id=turn_id, prompt=prompt):
+            return "pending_turn", dict(pending_turn)
+        if last_completed_turn and _turn_matches(last_completed_turn, turn_id=turn_id, prompt=prompt):
+            return "last_completed_turn", dict(last_completed_turn)
+        if not allow_fallback:
+            return "", {}
+    if pending_turn:
+        return "pending_turn", dict(pending_turn)
+    if last_completed_turn:
+        return "last_completed_turn", dict(last_completed_turn)
+    return "", {}
+
+
+def claim_turn_notification(
+    session: str,
+    event: str,
+    *,
+    turn_id: str = "",
+    prompt: str = "",
+    source: str = "",
+    status: str = "",
+    summary: str = "",
+    notification_key: str = "",
+) -> bool:
+    normalized_event = str(notification_key or event or "").strip().lower()
+    if not session or not normalized_event:
+        return True
+    with session_lock(session):
+        meta = load_meta(session)
+        strict_match = str(event or "").strip().lower() == "completed" and bool(turn_id or prompt)
+        turn_key, turn = _current_turn_entry(
+            meta,
+            turn_id=turn_id,
+            prompt=prompt,
+            allow_fallback=not strict_match,
+        )
+        if not turn_key or not turn:
+            return True
+        notifications = turn.get("notifications")
+        if not isinstance(notifications, dict):
+            notifications = {}
+        if normalized_event in notifications:
+            return False
+        notifications[normalized_event] = {
+            "at": time.time(),
+            "source": str(source or "").strip(),
+            "status": str(status or "").strip(),
+            "summary": shorten(summary, 400),
+        }
+        turn["notifications"] = notifications
+        meta[turn_key] = turn
+        save_meta(session, meta)
+        return True
+
+
+def release_turn_notification(
+    session: str,
+    event: str,
+    *,
+    turn_id: str = "",
+    prompt: str = "",
+    notification_key: str = "",
+) -> None:
+    normalized_event = str(notification_key or event or "").strip().lower()
+    if not session or not normalized_event:
+        return
+    with session_lock(session):
+        meta = load_meta(session)
+        strict_match = str(event or "").strip().lower() == "completed" and bool(turn_id or prompt)
+        turn_key, turn = _current_turn_entry(
+            meta,
+            turn_id=turn_id,
+            prompt=prompt,
+            allow_fallback=not strict_match,
+        )
+        if not turn_key or not turn:
+            return
+        notifications = turn.get("notifications")
+        if not isinstance(notifications, dict) or normalized_event not in notifications:
+            return
+        notifications.pop(normalized_event, None)
+        turn["notifications"] = notifications
+        meta[turn_key] = turn
+        save_meta(session, meta)
+
+
+def update_watchdog_metadata(
+    session: str,
+    *,
+    turn_id: str,
+    values: Mapping[str, Any],
+) -> Dict[str, Any]:
+    with session_lock(session):
+        meta = load_meta(session)
+        pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else None
+        if not pending_turn or str(pending_turn.get("turn_id") or "") != turn_id:
+            return {}
+        watchdog = pending_turn.get("watchdog")
+        if not isinstance(watchdog, dict):
+            watchdog = {}
+        watchdog.update(values)
+        pending_turn["watchdog"] = watchdog
+        meta["pending_turn"] = pending_turn
+        save_meta(session, meta)
+        return dict(watchdog)
+
+
+def _orche_bootstrap_command() -> List[str]:
+    module_dir = Path(__file__).resolve().parent
+    bootstrap = (
+        "import sys; "
+        f"sys.path.insert(0, {str(module_dir)!r}); "
+        "import cli; "
+        "sys.argv = ['orche', *sys.argv[1:]]; "
+        "raise SystemExit(cli.main())"
+    )
+    return [sys.executable, "-c", bootstrap]
+
+
+def emit_internal_notify(
+    session: str,
+    *,
+    event: str,
+    summary: str,
+    status: str,
+    turn_id: str = "",
+    cwd: str = "",
+    source: str = "",
+    notification_key: str = "",
+    tail_text: str = "",
+) -> bool:
+    payload = {
+        "event": event,
+        "summary": summary,
+        "session": session,
+        "cwd": cwd,
+        "turn_id": turn_id,
+        "source": source,
+        "metadata": {
+            "turn_id": turn_id,
+            "source": source,
+            "notification_key": notification_key,
+        },
+    }
+    if tail_text.strip():
+        payload["metadata"]["tail_text"] = tail_text.strip()
+        payload["metadata"]["tail_lines"] = NOTIFY_TAIL_LINES
+    command = _orche_bootstrap_command() + ["notify-internal", "--session", session, "--status", status]
+    result = subprocess.run(
+        command,
+        input=json.dumps(payload, ensure_ascii=False),
+        text=True,
+        capture_output=True,
+        check=False,
+        start_new_session=True,
+    )
+    if result.returncode != 0:
+        log_event(
+            "watchdog.notify.failed",
+            session=session,
+            notify_event=event,
+            status=status,
+            detail=shorten((result.stderr or result.stdout or "").strip(), 400),
+        )
+        return False
+    return True
+
+
+def _watchdog_summary_for_event(
+    event: str,
+    *,
+    pending_turn: Mapping[str, Any],
+    capture: str,
+) -> str:
+    before_capture = str(pending_turn.get("before_capture") or "")
+    delta = turn_delta(before_capture, capture) if capture else ""
+    prompt = str(pending_turn.get("prompt") or "")
+    candidate = extract_summary_candidate(delta, prompt=prompt)
+    if candidate and not _is_prompt_fragment(candidate, prompt):
+        return candidate
+    if event == "failed":
+        return "Agent process exited before completion notify was delivered"
+    if event == "needs-input":
+        return "Agent has been idle for an extended period and likely needs input"
+    return "Agent output has stalled without observable progress"
+
+
+def _watchdog_event_status(event: str) -> str:
+    if event == "failed":
+        return "failure"
+    if event in {"stalled", "needs-input", "startup-blocked"}:
+        return event
+    return "success"
+
+
+def _pending_turn_completion_summary(
+    plugin: AgentPlugin,
+    *,
+    pending_turn: Mapping[str, Any],
+    capture: str,
+) -> str:
+    before_capture = str(pending_turn.get("before_capture") or "")
+    prompt = str(pending_turn.get("prompt") or "")
+    delta = turn_delta(before_capture, capture) if capture else ""
+    if not delta:
+        return ""
+    summary = plugin.extract_completion_summary(delta, prompt)
+    if summary:
+        return summary
+    if not plugin.capture_has_completion_surface(delta, prompt):
+        return ""
+    return extract_summary_candidate(delta, prompt=prompt)
+
+
+def _latest_notification_at(pending_turn: Mapping[str, Any]) -> float:
+    notifications = pending_turn.get("notifications")
+    if not isinstance(notifications, dict):
+        return 0.0
+    latest = 0.0
+    for payload in notifications.values():
+        if not isinstance(payload, Mapping):
+            continue
+        try:
+            latest = max(latest, float(payload.get("at") or 0.0))
+        except (TypeError, ValueError):
+            continue
+    return latest
+
+
+def _watchdog_reminder_summary(session: str, state: str) -> str:
+    normalized = str(state or "").strip().lower() or "stalled"
+    if normalized == "needs-input":
+        situation = "The agent is likely waiting for terminal input, approval, or other user intervention."
+    else:
+        situation = "The agent session has shown no visible progress for an extended period."
+    return (
+        f"Session {session} is still in {normalized} state and has gone 10 minutes without a successful notify. "
+        f"{situation} To reconnect with it, run `orche status {session}` and "
+        f"`orche read {session} --lines 120`."
+    )
+
+
+def start_session_watchdog(session: str, *, turn_id: str = "") -> int:
+    meta = load_meta(session)
+    turn_key, turn = _current_turn_entry(meta, turn_id=turn_id)
+    if turn_key != "pending_turn" or not turn:
+        raise OrcheError(f"Session {session} has no pending turn to watch")
+    resolved_turn_id = str(turn.get("turn_id") or "").strip()
+    watchdog = turn.get("watchdog") if isinstance(turn.get("watchdog"), dict) else {}
+    existing_pid = int(watchdog.get("pid") or 0) if str(watchdog.get("pid") or "").isdigit() else 0
+    if existing_pid and process_is_alive(existing_pid):
+        return existing_pid
+    command = _orche_bootstrap_command() + ["watchdog-loop-internal", "--session", session, "--turn-id", resolved_turn_id]
+    proc = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    update_watchdog_metadata(
+        session,
+        turn_id=resolved_turn_id,
+        values={
+            "pid": proc.pid,
+            "state": "starting",
+            "started_at": time.time(),
+            "last_progress_at": float(turn.get("submitted_at") or time.time()),
+            "last_sample_at": 0.0,
+            "idle_samples": 0,
+            "stop_requested": False,
+        },
+    )
+    return proc.pid
+
+
+def stop_session_watchdog(session: str) -> int:
+    meta = load_meta(session)
+    turn_key, turn = _current_turn_entry(meta)
+    if turn_key != "pending_turn" or not turn:
+        return 0
+    watchdog = turn.get("watchdog") if isinstance(turn.get("watchdog"), dict) else {}
+    pid = int(watchdog.get("pid") or 0) if str(watchdog.get("pid") or "").isdigit() else 0
+    update_watchdog_metadata(
+        session,
+        turn_id=str(turn.get("turn_id") or ""),
+        values={
+            "stop_requested": True,
+            "stopped_at": time.time(),
+            "state": "stopping",
+        },
+    )
+    if pid > 0 and process_is_alive(pid):
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
+    return pid
+
+
+def complete_pending_turn(
+    session: str,
+    *,
+    summary: str = "",
+    turn_id: str = "",
+    prompt: str = "",
+    completed_at: float | None = None,
+) -> Dict[str, Any]:
+    finished_at = completed_at if completed_at is not None else time.time()
+    with session_lock(session):
+        meta = load_meta(session)
+        pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else None
+        if not pending_turn:
+            return {}
+        pending_turn_id = str(pending_turn.get("turn_id") or "")
+        pending_prompt = str(pending_turn.get("prompt") or "")
+        if (
+            turn_id
+            and pending_turn_id
+            and pending_turn_id != str(turn_id)
+            and (not prompt or pending_prompt != str(prompt))
+        ):
+            return {}
+        watchdog = pending_turn.get("watchdog") if isinstance(pending_turn.get("watchdog"), dict) else {}
+        pid = int(watchdog.get("pid") or 0) if str(watchdog.get("pid") or "").isdigit() else 0
+        completed = dict(pending_turn)
+        if summary:
+            completed["summary"] = summary
+        completed["completed_at"] = finished_at
+        meta["last_completed_turn"] = completed
+        meta.pop("pending_turn", None)
+        save_meta(session, meta)
+    if pid > 0 and process_is_alive(pid):
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
+    return completed
+
+
+def session_watch_status(session: str) -> Dict[str, Any]:
+    meta = load_meta(session)
+    pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else {}
+    watchdog = pending_turn.get("watchdog") if isinstance(pending_turn.get("watchdog"), dict) else {}
+    pid = int(watchdog.get("pid") or 0) if str(watchdog.get("pid") or "").isdigit() else 0
+    last_progress_at = float(watchdog.get("last_progress_at") or 0.0)
+    return {
+        "session": session,
+        "active": bool(pending_turn),
+        "turn_id": str(pending_turn.get("turn_id") or ""),
+        "submitted_at": float(pending_turn.get("submitted_at") or 0.0),
+        "watchdog_pid": pid,
+        "watchdog_alive": process_is_alive(pid),
+        "watchdog_state": str(watchdog.get("state") or ""),
+        "watchdog_started_at": float(watchdog.get("started_at") or 0.0),
+        "watchdog_last_progress_at": last_progress_at,
+        "watchdog_last_sample_at": float(watchdog.get("last_sample_at") or 0.0),
+        "watchdog_idle_seconds": max(0.0, time.time() - last_progress_at) if last_progress_at else 0.0,
+        "watchdog_stop_requested": bool(watchdog.get("stop_requested") or False),
+        "watchdog_last_event": str(watchdog.get("last_event") or ""),
+        "watchdog_last_signature": str(watchdog.get("last_signature") or ""),
+        "notifications": dict(pending_turn.get("notifications") or {}),
+    }
+
+
+def run_session_watchdog(
+    session: str,
+    *,
+    turn_id: str,
+    poll_interval: float = WATCHDOG_POLL_INTERVAL,
+    stalled_after: float = WATCHDOG_STALLED_AFTER,
+    needs_input_after: float = WATCHDOG_NEEDS_INPUT_AFTER,
+    reminder_after: float = WATCHDOG_REMINDER_AFTER,
+) -> str:
+    while True:
+        meta = load_meta(session)
+        pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else None
+        if not pending_turn or str(pending_turn.get("turn_id") or "") != turn_id:
+            return "completed"
+        plugin = get_agent(str(meta.get("agent") or "codex"))
+        watchdog = pending_turn.get("watchdog") if isinstance(pending_turn.get("watchdog"), dict) else {}
+        if bool(watchdog.get("stop_requested")):
+            update_watchdog_metadata(
+                session,
+                turn_id=turn_id,
+                values={"state": "stopped", "stopped_at": time.time()},
+            )
+            return "stopped"
+        sample = sample_watchdog_state(session, pane_id=str(pending_turn.get("pane_id") or meta.get("pane_id") or ""))
+        now = time.time()
+        previous_signature = str(watchdog.get("last_signature") or "")
+        previous_cursor = (
+            str(watchdog.get("last_cursor_x") or ""),
+            str(watchdog.get("last_cursor_y") or ""),
+        )
+        current_cursor = (str(sample.get("cursor_x") or ""), str(sample.get("cursor_y") or ""))
+        progress_detected = observable_progress_detected(previous_signature, previous_cursor, sample)
+        last_progress_at = float(watchdog.get("last_progress_at") or pending_turn.get("submitted_at") or now)
+        idle_samples = int(watchdog.get("idle_samples") or 0)
+        state = "running"
+        if progress_detected:
+            last_progress_at = now
+            idle_samples = 0
+        else:
+            idle_samples += 1
+            idle_seconds = max(0.0, now - last_progress_at)
+            if not bool(sample.get("agent_running")):
+                state = "failed"
+            elif idle_samples >= 2 and idle_seconds >= needs_input_after:
+                state = "needs-input"
+            elif idle_samples >= 2 and idle_seconds >= stalled_after:
+                state = "stalled"
+        update_watchdog_metadata(
+            session,
+            turn_id=turn_id,
+            values={
+                "pid": os.getpid(),
+                "state": state,
+                "last_signature": str(sample.get("signature") or ""),
+                "last_cursor_x": current_cursor[0],
+                "last_cursor_y": current_cursor[1],
+                "last_cpu_percent": float(sample.get("cpu_percent") or 0.0),
+                "last_sample_at": now,
+                "last_progress_at": last_progress_at,
+                "idle_samples": idle_samples,
+            },
+        )
+        if state in {"failed", "stalled", "needs-input"}:
+            emitted = False
+            if str(watchdog.get("last_event") or "") != state:
+                summary = _watchdog_summary_for_event(
+                    state,
+                    pending_turn=pending_turn,
+                    capture=str(sample.get("capture") or ""),
+                )
+                emitted = emit_internal_notify(
+                    session,
+                    event=state,
+                    summary=summary,
+                    status=_watchdog_event_status(state),
+                    turn_id=turn_id,
+                    cwd=str(meta.get("cwd") or ""),
+                    source="watchdog",
+                    tail_text=recent_capture_excerpt(str(sample.get("capture") or "")),
+                )
+            update_watchdog_metadata(
+                session,
+                turn_id=turn_id,
+                values={
+                    "last_event": state if emitted else str(watchdog.get("last_event") or ""),
+                    "last_event_at": now if emitted else float(watchdog.get("last_event_at") or 0.0),
+                },
+            )
+            if state == "failed":
+                return state
+        latest_notify_at = _latest_notification_at(pending_turn or {})
+        if (
+            state in {"stalled", "needs-input"}
+            and latest_notify_at > 0.0
+            and now - latest_notify_at >= reminder_after
+        ):
+            reminder_bucket = int(now // max(reminder_after, 1.0))
+            reminder_key = f"reminder:{state}:{int(latest_notify_at)}:{reminder_bucket}"
+            emit_internal_notify(
+                session,
+                event="reminder",
+                summary=_watchdog_reminder_summary(session, state),
+                status=_watchdog_event_status(state),
+                turn_id=turn_id,
+                cwd=str(meta.get("cwd") or ""),
+                source="watchdog",
+                notification_key=reminder_key,
+            )
+        time.sleep(max(0.5, poll_interval))
+
+
+def ensure_session(
+    session: str,
+    cwd: Path,
+    agent: str,
+    *,
+    approve_all: bool = False,
+    runtime_home: Optional[str] = None,
+    codex_home: Optional[str] = None,
+    notify_to: Optional[str] = None,
+    notify_target: Optional[str] = None,
+) -> str:
+    cwd = cwd.resolve()
+    plugin = get_agent(agent)
+    existing_meta = load_meta(session)
+    if existing_meta and session_launch_mode(existing_meta) != "managed":
+        raise OrcheError(
+            f"Session {session} is already bound to native open mode. "
+            "Reuse it through orche open with the same raw agent args, or close it and recreate it."
+        )
+    existing_cwd = Path(str(existing_meta.get("cwd") or "")).resolve() if existing_meta.get("cwd") else None
+    if existing_cwd is not None and existing_cwd != cwd:
+        raise OrcheError(
+            f"Session {session} is already bound to cwd={existing_cwd}. "
+            "Use the same --cwd or close the session and create a new one."
+        )
+    existing_agent = str(existing_meta.get("agent") or "").strip()
+    if existing_agent and existing_agent != plugin.name:
+        raise OrcheError(
+            f"Session {session} is already bound to agent={existing_agent}. "
+            "Close the session and create a new one for a different agent."
+        )
+    existing_notify_binding = _read_notify_binding(existing_meta)
+    provided_notify_to = str(notify_to or "").strip()
+    provided_notify_target = str(notify_target or "").strip()
+    if (not provided_notify_to or not provided_notify_target) and not existing_notify_binding:
+        raise OrcheError("managed sessions require both notify_to and notify_target")
+    provided_notify_binding = (
+        build_notify_binding(provided_notify_to, provided_notify_target)
+        if provided_notify_to and provided_notify_target
+        else existing_notify_binding
+    )
+    if existing_meta and provided_notify_binding != existing_notify_binding:
+        if existing_notify_binding:
+            raise OrcheError(
+                f"Session {session} is already bound to notify_to={existing_notify_binding['provider']} "
+                f"notify_target={existing_notify_binding['target']}. "
+                "Use the same notify binding or close the session and create a new one."
+            )
+    resolved_notify_binding = existing_notify_binding or provided_notify_binding
+    resolved_discord_channel_id = (
+        resolved_notify_binding.get("target")
+        if resolved_notify_binding.get("provider") == "discord"
+        else ""
+    )
+
+    requested_runtime_home = runtime_home or codex_home
+    managed_runtime_home = False
+    if requested_runtime_home:
+        resolved_runtime_home = normalize_runtime_home(requested_runtime_home)
+        runtime = AgentRuntime(home=resolved_runtime_home, managed=False, label=plugin.runtime_label)
+    elif runtime_home_from_meta(existing_meta):
+        resolved_runtime_home = runtime_home_from_meta(existing_meta)
+        managed_runtime_home = runtime_home_managed_from_meta(existing_meta)
+        runtime = AgentRuntime(
+            home=resolved_runtime_home,
+            managed=managed_runtime_home,
+            label=runtime_label_from_meta(existing_meta, plugin),
+        )
+    else:
+        runtime = prepare_managed_runtime(
+            plugin,
+            session,
+            cwd=cwd,
+            discord_channel_id=resolved_discord_channel_id,
+        )
+        resolved_runtime_home = normalize_runtime_home(runtime.home)
+        managed_runtime_home = True
+    if managed_runtime_home:
+        runtime = prepare_managed_runtime(
+            plugin,
+            session,
+            cwd=cwd,
+            discord_channel_id=resolved_discord_channel_id,
+        )
+        resolved_runtime_home = normalize_runtime_home(runtime.home)
+    existing_runtime_home = runtime_home_from_meta(existing_meta)
+    if existing_runtime_home and resolved_runtime_home and existing_runtime_home != resolved_runtime_home:
+        raise OrcheError(
+            f"Session {session} is already bound to runtime_home={existing_runtime_home}. "
+            f"Use the same {plugin.runtime_option_name} or close the session and create a new one."
         )
     pane_id = ensure_pane(session, cwd, agent)
-    pane_id = ensure_codex_running(
+    pane_id = ensure_agent_running(
+        plugin,
         session,
         cwd,
         pane_id,
         approve_all=approve_all,
-        codex_home=resolved_codex_home,
+        runtime=runtime,
         discord_channel_id=resolved_discord_channel_id,
     )
     meta = load_meta(session)
@@ -1134,23 +2169,29 @@ def ensure_session(
             "cwd": str(cwd),
             "agent": agent,
             "pane_id": pane_id,
-            "codex_home": resolved_codex_home,
-            "codex_home_managed": managed_codex_home,
-            "discord_channel_id": resolved_discord_channel_id,
-            "discord_session": resolved_discord_session,
+            "launch_mode": "managed",
             "last_seen_at": time.time(),
         }
     )
+    apply_runtime_to_meta(meta, agent=agent, runtime=runtime)
+    meta.pop("native_cli_args", None)
+    meta.pop("discord_channel_id", None)
+    meta.pop("discord_session", None)
+    meta.pop("notify_routes", None)
+    if resolved_notify_binding:
+        meta["notify_binding"] = resolved_notify_binding
+    else:
+        meta.pop("notify_binding", None)
     save_meta(session, meta)
     update_runtime_config(
         session=session,
         cwd=cwd,
         agent=agent,
         pane_id=pane_id,
-        codex_home=resolved_codex_home,
-        codex_home_managed=managed_codex_home,
-        discord_channel_id=resolved_discord_channel_id,
-        discord_session=resolved_discord_session,
+        tmux_session=str(meta.get("tmux_session") or ""),
+        runtime_home=resolved_runtime_home,
+        runtime_home_managed=managed_runtime_home,
+        runtime_label=runtime.label,
     )
     return pane_id
 
@@ -1162,29 +2203,48 @@ def send_prompt(
     prompt: str,
     *,
     approve_all: bool = False,
-    discord_channel_id: Optional[str] = None,
-    discord_session: Optional[str] = None,
 ) -> str:
-    pane_id = ensure_session(
-        session,
-        cwd,
-        agent,
-        approve_all=approve_all,
-        discord_channel_id=discord_channel_id,
-        discord_session=discord_session,
-    )
+    plugin = get_agent(agent)
+    meta = load_meta(session)
+    if session_launch_mode(meta) == "native":
+        pane_id = ensure_native_session(
+            session,
+            cwd,
+            agent,
+            cli_args=native_cli_args_from_meta(meta),
+        )
+    else:
+        pane_id = ensure_session(
+            session,
+            cwd,
+            agent,
+            approve_all=approve_all,
+        )
     before_capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES)
+    turn_id = uuid.uuid4().hex[:12]
     meta = load_meta(session)
     meta["pending_turn"] = {
-        "turn_id": uuid.uuid4().hex[:12],
+        "turn_id": turn_id,
         "prompt": prompt,
         "before_capture": before_capture,
         "submitted_at": time.time(),
         "pane_id": pane_id,
+        "notifications": {},
+        "watchdog": {
+            "state": "queued",
+            "started_at": 0.0,
+            "last_progress_at": time.time(),
+            "last_sample_at": 0.0,
+            "idle_samples": 0,
+            "stop_requested": False,
+        },
     }
     save_meta(session, meta)
-    bridge_type(session, prompt)
-    bridge_keys(session, ["Enter"])
+    plugin.submit_prompt(session, prompt, bridge=BRIDGE)
+    try:
+        start_session_watchdog(session, turn_id=turn_id)
+    except Exception as exc:  # pragma: no cover
+        log_exception("watchdog.start.error", exc, session=session, turn_id=turn_id)
     append_action_history(session, cwd, agent, "prompt", prompt=prompt, pane_id=pane_id)
     return pane_id
 
@@ -1193,18 +2253,24 @@ def latest_turn_summary(session: str) -> str:
     meta = load_meta(session)
     pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else None
     if pending_turn:
-        pane_id = str((bridge_resolve(session) or pending_turn.get("pane_id") or meta.get("pane_id") or "")).strip()
-        capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES) if pane_id else ""
-        before_capture = str(pending_turn.get("before_capture") or "")
-        delta = turn_delta(before_capture, capture) if capture else ""
-        summary = extract_summary_candidate(delta, prompt=str(pending_turn.get("prompt") or ""))
+        agent = str(meta.get("agent") or "codex")
+        plugin = get_agent(agent)
+        prompt = str(pending_turn.get("prompt") or "")
+        deadline = time.monotonic() + LATEST_TURN_SUMMARY_RETRY_SECONDS
+        summary = ""
+        while True:
+            pane_id = str((bridge_resolve(session) or pending_turn.get("pane_id") or meta.get("pane_id") or "")).strip()
+            capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES) if pane_id else ""
+            before_capture = str(pending_turn.get("before_capture") or "")
+            delta = turn_delta(before_capture, capture) if capture else ""
+            summary = plugin.extract_completion_summary(delta, prompt)
+            if not summary and plugin.capture_has_completion_surface(delta, prompt):
+                summary = extract_summary_candidate(delta, prompt=prompt)
+            if summary or time.monotonic() >= deadline:
+                break
+            time.sleep(LATEST_TURN_SUMMARY_RETRY_INTERVAL)
         if summary:
-            completed = dict(pending_turn)
-            completed["summary"] = summary
-            completed["completed_at"] = time.time()
-            meta["last_completed_turn"] = completed
-            meta.pop("pending_turn", None)
-            save_meta(session, meta)
+            complete_pending_turn(session, summary=summary)
             return summary
         save_meta(session, meta)
         return ""
@@ -1218,24 +2284,38 @@ def build_status(session: str) -> Dict[str, Any]:
     meta = load_meta(session)
     pane_id = bridge_resolve(session) or str(meta.get("pane_id") or "")
     info = get_pane_info(pane_id) if pane_id else None
+    resolved_tmux_session = str((info or {}).get("session_name") or meta.get("tmux_session") or "").strip()
     cwd = str(meta.get("cwd") or (info or {}).get("pane_current_path") or "-")
     agent = str(meta.get("agent") or "codex")
-    discord_session = str(meta.get("discord_session") or "")
-    discord_channel_id = str(meta.get("discord_channel_id") or "").strip()
-    if not discord_session and discord_channel_id.isdigit():
-        discord_session = derive_discord_session(discord_channel_id)
+    plugin = get_agent(agent)
+    notify_binding = _read_notify_binding(meta) if meta else {}
+    discord_session = notify_binding.get("session", "") if notify_binding.get("provider") == "discord" else ""
+    runtime_home = runtime_home_from_meta(meta)
+    runtime_home_managed = runtime_home_managed_from_meta(meta)
+    agent_running = bool(pane_id and is_agent_running(plugin, pane_id))
+    pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else {}
+    watchdog = pending_turn.get("watchdog") if isinstance(pending_turn.get("watchdog"), dict) else {}
     return {
         "backend": BACKEND,
         "session": session,
         "cwd": cwd,
         "agent": agent,
-        "codex_home": str(meta.get("codex_home") or ""),
-        "codex_home_managed": bool(meta.get("codex_home_managed")),
+        "runtime_home": runtime_home,
+        "runtime_home_managed": runtime_home_managed,
+        "runtime_label": runtime_label_from_meta(meta, plugin),
+        "codex_home": str(meta.get("codex_home") or runtime_home),
+        "codex_home_managed": bool(meta.get("codex_home_managed") or runtime_home_managed),
+        "tmux_session": resolved_tmux_session or "-",
         "pane_id": pane_id or "-",
         "window_name": (info or {}).get("window_name", meta.get("window_name", "-")),
-        "codex_running": bool(pane_id and is_codex_running(pane_id)),
+        "agent_running": agent_running,
+        "codex_running": agent_running,
         "pane_exists": bool(pane_id and pane_exists(pane_id)),
         "discord_session": discord_session,
+        "notify_binding": notify_binding,
+        "pending_turn_id": str(pending_turn.get("turn_id") or ""),
+        "pending_turn_submitted_at": float(pending_turn.get("submitted_at") or 0.0),
+        "watchdog": dict(watchdog),
     }
 
 
@@ -1251,34 +2331,85 @@ def resolve_session_context(
     if require_existing and not meta:
         raise OrcheError(f"Unknown session: {session}")
     if require_cwd_agent and (cwd is None or agent is None):
-        raise OrcheError(f"Session {session} is missing cwd/agent context; create it with session-new first")
+        raise OrcheError(f"Session {session} is missing cwd/agent context; open it first")
     return cwd, agent, meta
 
 
+def current_session_id() -> str:
+    env_session = str(os.environ.get("ORCHE_SESSION") or "").strip()
+    if env_session:
+        return env_session
+
+    current_tmux_session = _current_tmux_value("#{session_name}")
+    if current_tmux_session:
+        for entry in list_sessions():
+            session = str(entry.get("session") or "").strip()
+            if not session:
+                continue
+            mapped_tmux_session = str(entry.get("tmux_session") or tmux_session_name(session)).strip()
+            if mapped_tmux_session == current_tmux_session:
+                return session
+
+    current_pane_id = _current_tmux_value("#{pane_id}")
+    if current_pane_id:
+        for entry in list_sessions():
+            if str(entry.get("pane_id") or "").strip() == current_pane_id:
+                session = str(entry.get("session") or "").strip()
+                if session:
+                    return session
+
+    pane_title = _current_tmux_value("#{pane_title}")
+    if pane_title:
+        meta = load_meta(pane_title)
+        if meta:
+            return str(meta.get("session") or pane_title).strip()
+
+    raise OrcheError("Unable to resolve current orche session id. Set ORCHE_SESSION or run inside an orche tmux pane.")
+
+
 def cancel_session(session: str) -> str:
-    bridge_keys(session, ["C-c"])
+    _cwd, agent, _meta = resolve_session_context(session=session)
+    plugin = get_agent(agent or "codex")
+    plugin.interrupt(session, bridge=BRIDGE)
     return bridge_resolve(session) or "-"
 
 
 def close_session(session: str) -> str:
     meta = load_meta(session)
+    agent = str(meta.get("agent") or "codex")
+    plugin = get_agent(agent)
     pane_id = bridge_resolve(session) or str(meta.get("pane_id") or "")
-    if pane_id and pane_exists(pane_id):
-        info = get_pane_info(pane_id)
-        if info is not None:
-            tmux("kill-window", "-t", info["window_id"], check=False, capture=True)
-    if bool(meta.get("codex_home_managed")):
-        codex_home = normalize_codex_home(str(meta.get("codex_home") or ""))
-        if codex_home:
-            remove_managed_codex_home(codex_home)
+    info = get_pane_info(pane_id) if pane_id and pane_exists(pane_id) else None
+    target_tmux_session = str((info or {}).get("session_name") or meta.get("tmux_session") or "").strip()
+    if not target_tmux_session:
+        target_tmux_session = tmux_session_name(session)
+    with contextlib.suppress(Exception):
+        stop_session_watchdog(session)
+    for client_tty in list_tmux_session_clients(target_tmux_session):
+        tmux("detach-client", "-t", client_tty, check=False, capture=True)
+    if _tmux_has_session(target_tmux_session):
+        tmux("kill-session", "-t", target_tmux_session, check=False, capture=True)
+    runtime_home = runtime_home_from_meta(meta)
+    if runtime_home and runtime_home_managed_from_meta(meta):
+        plugin.cleanup_runtime(
+            AgentRuntime(
+                home=runtime_home,
+                managed=True,
+                label=runtime_label_from_meta(meta, plugin),
+            )
+        )
     config = load_config()
     if str(config.get("session") or "") == session:
         config["session"] = ""
         config["cwd"] = ""
         config["agent"] = ""
         config["pane_id"] = ""
+        config["runtime_home"] = ""
+        config["runtime_home_managed"] = False
+        config["runtime_label"] = ""
         config["codex_home"] = ""
         config["codex_home_managed"] = False
+        config["tmux_session"] = ""
         config["updated_at"] = time.time()
         save_config(config)
     remove_meta(session)
