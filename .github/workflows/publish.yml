@@ -130,10 +130,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
           mapfile -t archives < <(find dist-artifacts -type f -name '*.tar.gz' | sort)
           if [[ "${#archives[@]}" -eq 0 ]]; then
             echo "::error::No binary archives were downloaded."
             exit 1
           fi
-          gh release upload "${TAG_NAME}" "${archives[@]}" --clobber
+          gh release upload "${TAG_NAME}" "${archives[@]}" --repo "${REPO}" --clobber
