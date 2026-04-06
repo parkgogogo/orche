@@ -66,6 +66,75 @@ def test_current_session_id_falls_back_to_tmux_pane_mapping(xdg_runtime, monkeyp
     assert backend.current_session_id() == "mapped-session"
 
 
+def test_attach_session_switches_to_dedicated_tmux_session(xdg_runtime, monkeypatch):
+    backend.save_meta(
+        "demo-session",
+        {
+            "session": "demo-session",
+            "tmux_session": backend.tmux_session_name("demo-session"),
+            "pane_id": "%9",
+        },
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def fake_tmux(*args, **kwargs):
+        calls.append(tuple(args))
+        if list(args) == ["has-session", "-t", backend.tmux_session_name("demo-session")]:
+            return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+        if list(args[:2]) == ["switch-client", "-t"]:
+            return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+        return subprocess.CompletedProcess(["tmux", *args], 1, "", "")
+
+    monkeypatch.setenv("TMUX", "1")
+    monkeypatch.setattr(backend, "bridge_resolve", lambda session: "")
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+
+    target = backend.attach_session("demo-session")
+
+    assert target == backend.tmux_session_name("demo-session")
+    assert ("switch-client", "-t", backend.tmux_session_name("demo-session")) in calls
+
+
+def test_close_session_kills_dedicated_tmux_session(xdg_runtime, monkeypatch):
+    backend.save_meta(
+        "demo-session",
+        {
+            "session": "demo-session",
+            "agent": "codex",
+            "pane_id": "%9",
+            "tmux_session": backend.tmux_session_name("demo-session"),
+        },
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def fake_tmux(*args, **kwargs):
+        calls.append(tuple(args))
+        if list(args) == ["has-session", "-t", backend.tmux_session_name("demo-session")]:
+            return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+        if list(args[:4]) == ["list-clients", "-t", backend.tmux_session_name("demo-session"), "-F"]:
+            return subprocess.CompletedProcess(["tmux", *args], 0, "/dev/ttys001\n", "")
+        if list(args[:2]) == ["detach-client", "-t"]:
+            return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+        if list(args[:2]) == ["kill-session", "-t"]:
+            return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+        return subprocess.CompletedProcess(["tmux", *args], 1, "", "")
+
+    monkeypatch.setattr(backend, "bridge_resolve", lambda session: "%9")
+    monkeypatch.setattr(
+        backend,
+        "get_pane_info",
+        lambda pane_id: {"session_name": backend.tmux_session_name("demo-session")} if pane_id == "%9" else None,
+    )
+    monkeypatch.setattr(backend, "pane_exists", lambda pane_id: pane_id == "%9")
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+
+    pane_id = backend.close_session("demo-session")
+
+    assert pane_id == "%9"
+    assert ("detach-client", "-t", "/dev/ttys001") in calls
+    assert ("kill-session", "-t", backend.tmux_session_name("demo-session")) in calls
+
+
 def test_list_command_shows_sessions(xdg_runtime):
     backend.save_meta(
         "demo-session",
@@ -84,34 +153,41 @@ def test_list_command_shows_sessions(xdg_runtime):
     assert "/repo/demo" in result.stdout
 
 
-def test_ensure_window_uses_next_available_tmux_index(xdg_runtime, monkeypatch, tmp_path):
+def test_ensure_tmux_session_creates_dedicated_session(xdg_runtime, monkeypatch, tmp_path):
     calls: list[tuple[str, ...]] = []
     created = {"value": False}
+    expected_tmux_session = backend.tmux_session_name("demo-worker")
 
     def fake_tmux(*args, **kwargs):
         calls.append(tuple(args))
-        if list(args) == ["has-session", "-t", backend.TMUX_SESSION]:
-            return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
-        if list(args[:4]) == ["list-windows", "-t", backend.TMUX_SESSION, "-F"]:
-            fmt = args[4]
-            if fmt == "#{window_index}":
-                return subprocess.CompletedProcess(["tmux", *args], 0, "0\n5\n", "")
-            if fmt == "#{window_id}\t#{window_name}":
-                stdout = "@1\texisting-zero\n@5\texisting-five\n"
-                if created["value"]:
-                    stdout += "@6\torche-demo-worker\n"
-                return subprocess.CompletedProcess(["tmux", *args], 0, stdout, "")
-        if list(args[:3]) == ["new-window", "-d", "-t"]:
+        if list(args) == ["has-session", "-t", expected_tmux_session]:
+            code = 0 if created["value"] else 1
+            return subprocess.CompletedProcess(["tmux", *args], code, "", "")
+        if list(args[:4]) == ["new-session", "-d", "-s", expected_tmux_session]:
             created["value"] = True
             return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
         return subprocess.CompletedProcess(["tmux", *args], 1, "", "")
 
     monkeypatch.setattr(backend, "tmux", fake_tmux)
 
-    window = backend.ensure_window("orche-demo-worker", tmp_path)
+    tmux_session = backend.ensure_tmux_session("demo-worker", tmp_path)
 
-    assert window == {"window_id": "@6", "window_name": "orche-demo-worker"}
-    assert ("new-window", "-d", "-t", "orche:6", "-n", "orche-demo-worker", "-c", str(tmp_path)) in calls
+    assert tmux_session == expected_tmux_session
+    assert ("new-session", "-d", "-s", expected_tmux_session, "-n", "orche-demo-worker", "-c", str(tmp_path)) in calls
+
+
+def test_current_session_id_prefers_tmux_session_mapping(xdg_runtime, monkeypatch):
+    monkeypatch.delenv("ORCHE_SESSION", raising=False)
+
+    def fake_tmux(*args, **kwargs):
+        if list(args) == ["display-message", "-p", "#{session_name}"]:
+            return subprocess.CompletedProcess(["tmux"], 0, f"{backend.tmux_session_name('mapped-session')}\n", "")
+        return subprocess.CompletedProcess(["tmux"], 1, "", "")
+
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+    monkeypatch.setattr(backend, "list_sessions", lambda: [{"session": "mapped-session", "tmux_session": backend.tmux_session_name("mapped-session")}])
+
+    assert backend.current_session_id() == "mapped-session"
 
 
 def test_config_supports_discord_mention_user_id(xdg_runtime):

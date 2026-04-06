@@ -196,6 +196,10 @@ def window_name(session: str) -> str:
     return f"orche-{slugify(session)}"
 
 
+def tmux_session_name(session: str) -> str:
+    return f"{TMUX_SESSION}-{session_key(session)}"
+
+
 def session_key(session: str) -> str:
     return slugify(session)
 
@@ -249,12 +253,31 @@ def _known_tmux_sessions() -> Tuple[str, ...]:
     return (TMUX_SESSION, LEGACY_TMUX_SESSION)
 
 
-def _active_tmux_session(*, create: bool = False) -> str:
-    for session_name in _known_tmux_sessions():
-        result = tmux("has-session", "-t", session_name, check=False, capture=True)
-        if result.returncode == 0:
-            return session_name
-    return TMUX_SESSION if create else ""
+def _is_orche_tmux_session(name: str) -> bool:
+    session_name = str(name or "").strip()
+    return bool(session_name) and (
+        session_name in _known_tmux_sessions() or session_name.startswith(f"{TMUX_SESSION}-")
+    )
+
+
+def _tmux_has_session(name: str) -> bool:
+    session_name = str(name or "").strip()
+    if not session_name:
+        return False
+    result = tmux("has-session", "-t", session_name, check=False, capture=True)
+    return result.returncode == 0
+
+
+def list_tmux_sessions() -> List[str]:
+    result = tmux("list-sessions", "-F", "#{session_name}", check=False, capture=True)
+    if result.returncode != 0:
+        return []
+    sessions: List[str] = []
+    for line in result.stdout.splitlines():
+        session_name = line.strip()
+        if _is_orche_tmux_session(session_name):
+            sessions.append(session_name)
+    return sessions
 
 
 def _bridge_result(
@@ -352,34 +375,33 @@ def pane_exists(pane_id: str) -> bool:
 
 
 def tmux_session_exists() -> bool:
-    return bool(_active_tmux_session())
+    return bool(list_tmux_sessions())
 
 
-def list_windows() -> List[Dict[str, str]]:
-    session_name = _active_tmux_session()
-    if not session_name:
-        return []
-    result = tmux(
-        "list-windows",
-        "-t",
-        session_name,
-        "-F",
-        "#{window_id}\t#{window_name}",
-        check=False,
-        capture=True,
-    )
-    if result.returncode != 0:
-        return []
+def list_windows(target: Optional[str] = None) -> List[Dict[str, str]]:
+    session_names = [target] if target else list_tmux_sessions()
     windows: List[Dict[str, str]] = []
-    for line in result.stdout.splitlines():
-        parts = line.split("\t")
-        if len(parts) == 2:
-            windows.append({"window_id": parts[0], "window_name": parts[1]})
+    for session_name in session_names:
+        result = tmux(
+            "list-windows",
+            "-t",
+            session_name,
+            "-F",
+            "#{window_id}\t#{window_name}",
+            check=False,
+            capture=True,
+        )
+        if result.returncode != 0:
+            continue
+        for line in result.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) == 2:
+                windows.append({"session_name": session_name, "window_id": parts[0], "window_name": parts[1]})
     return windows
 
 
-def find_window(name: str) -> Optional[Dict[str, str]]:
-    for window in list_windows():
+def find_window(name: str, *, target: Optional[str] = None) -> Optional[Dict[str, str]]:
+    for window in list_windows(target):
         if window["window_name"] == name:
             return window
     return None
@@ -414,14 +436,11 @@ def list_panes(target: Optional[str] = None) -> List[Dict[str, str]]:
     if target:
         args.extend(["-t", target])
     else:
-        session_name = _active_tmux_session()
-        if not session_name:
-            return []
-        args.extend(["-t", session_name])
+        args.append("-a")
     args.extend(
         [
             "-F",
-            "#{pane_id}\t#{window_id}\t#{window_name}\t#{pane_dead}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}",
+            "#{session_name}\t#{pane_id}\t#{window_id}\t#{window_name}\t#{pane_dead}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}",
         ]
     )
     result = tmux(*args, check=False, capture=True)
@@ -430,18 +449,21 @@ def list_panes(target: Optional[str] = None) -> List[Dict[str, str]]:
     panes: List[Dict[str, str]] = []
     for line in result.stdout.splitlines():
         parts = line.split("\t")
-        if len(parts) != 8:
+        if len(parts) != 9:
+            continue
+        if not target and not _is_orche_tmux_session(parts[0]):
             continue
         panes.append(
             {
-                "pane_id": parts[0],
-                "window_id": parts[1],
-                "window_name": parts[2],
-                "pane_dead": parts[3],
-                "pane_pid": parts[4],
-                "pane_current_command": parts[5],
-                "pane_current_path": parts[6],
-                "pane_title": parts[7],
+                "session_name": parts[0],
+                "pane_id": parts[1],
+                "window_id": parts[2],
+                "window_name": parts[3],
+                "pane_dead": parts[4],
+                "pane_pid": parts[5],
+                "pane_current_command": parts[6],
+                "pane_current_path": parts[7],
+                "pane_title": parts[8],
             }
         )
     return panes
@@ -763,11 +785,12 @@ def session_exists(session: str) -> bool:
     session_name = str(session or "").strip()
     if not session_name:
         return False
-    if load_meta(session_name):
+    meta = load_meta(session_name)
+    if meta:
         return True
     if bridge_resolve(session_name):
         return True
-    return find_window(window_name(session_name)) is not None
+    return _tmux_has_session(tmux_session_name(session_name))
 
 
 def _current_tmux_value(fmt: str) -> str:
@@ -793,6 +816,7 @@ def load_config() -> Dict[str, Any]:
         "runtime_label": "",
         "codex_home": "",
         "codex_home_managed": False,
+        "tmux_session": "",
     }
     path = config_path()
     if not path.exists():
@@ -864,6 +888,7 @@ def update_runtime_config(
     cwd: Path,
     agent: str,
     pane_id: str,
+    tmux_session: str = "",
     runtime_home: Optional[str] = None,
     runtime_home_managed: Optional[bool] = None,
     runtime_label: str = "",
@@ -876,6 +901,7 @@ def update_runtime_config(
     config["cwd"] = str(cwd)
     config["agent"] = agent
     config["pane_id"] = pane_id
+    config["tmux_session"] = str(tmux_session or "").strip()
     normalized_runtime_home = normalize_runtime_home(runtime_home)
     config["runtime_home"] = normalized_runtime_home
     if runtime_home_managed is not None:
@@ -973,24 +999,32 @@ def bridge_keys(session: str, keys: Union[Iterable[str], str]) -> None:
 
 
 def attach_session(session: str, *, pane_id: str = "") -> str:
-    resolved_pane_id = pane_id or bridge_resolve(session) or str(load_meta(session).get("pane_id") or "")
-    if not resolved_pane_id:
-        raise OrcheError(f"Unknown session: {session}")
-    info = get_pane_info(resolved_pane_id)
-    if info is None:
-        raise OrcheError(f"Pane disappeared before attach: {resolved_pane_id}")
-    window_id = str(info.get("window_id") or "").strip()
-    if not window_id:
-        raise OrcheError(f"Window not found for session: {session}")
-    tmux_session_name = _active_tmux_session(create=True)
-    tmux("select-window", "-t", window_id, check=True, capture=False)
+    meta = load_meta(session)
+    resolved_pane_id = pane_id or bridge_resolve(session) or str(meta.get("pane_id") or "")
+    info = get_pane_info(resolved_pane_id) if resolved_pane_id else None
+    target_tmux_session = str(meta.get("tmux_session") or "").strip()
+    if info is not None:
+        target_tmux_session = str(info.get("session_name") or target_tmux_session).strip()
+    if not target_tmux_session:
+        target_tmux_session = tmux_session_name(session)
+    if not _tmux_has_session(target_tmux_session):
+        raise OrcheError(f"Tmux session not found for session: {session}")
     if os.environ.get("TMUX"):
-        result = tmux("switch-client", "-t", tmux_session_name, check=False, capture=True)
+        result = tmux("switch-client", "-t", target_tmux_session, check=False, capture=True)
         if result.returncode != 0:
-            tmux("attach-session", "-t", tmux_session_name, check=True, capture=False)
+            tmux("attach-session", "-t", target_tmux_session, check=True, capture=False)
     else:
-        tmux("attach-session", "-t", tmux_session_name, check=True, capture=False)
-    return window_id
+        tmux("attach-session", "-t", target_tmux_session, check=True, capture=False)
+    return target_tmux_session
+
+
+def list_tmux_session_clients(session_name: str) -> List[str]:
+    if not _tmux_has_session(session_name):
+        return []
+    result = tmux("list-clients", "-t", session_name, "-F", "#{client_tty}", check=False, capture=True)
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
 def deliver_notify_to_session(session: str, prompt: str) -> str:
@@ -1078,33 +1112,14 @@ def apply_runtime_to_meta(meta: Dict[str, Any], *, agent: str, runtime: AgentRun
         meta["codex_home_managed"] = False
 
 
-def ensure_window(name: str, cwd: Path) -> Dict[str, str]:
-    window = find_window(name)
-    if window is not None:
-        return window
-    tmux_session_name = _active_tmux_session()
-    if tmux_session_name:
-        last_error: subprocess.CalledProcessError | None = None
-        for _attempt in range(2):
-            target = f"{tmux_session_name}:{next_window_index(tmux_session_name)}"
-            try:
-                tmux("new-window", "-d", "-t", target, "-n", name, "-c", str(cwd), check=True, capture=True)
-                break
-            except subprocess.CalledProcessError as exc:
-                last_error = exc
-                detail = (exc.stderr or "").strip().lower()
-                if "index" in detail and "in use" in detail:
-                    continue
-                raise
-        else:
-            assert last_error is not None
-            raise last_error
-    else:
-        tmux("new-session", "-d", "-s", TMUX_SESSION, "-n", name, "-c", str(cwd), check=True, capture=True)
-    created = find_window(name)
-    if created is None:
-        raise OrcheError(f"Failed to create tmux window for {name}")
-    return created
+def ensure_tmux_session(session: str, cwd: Path) -> str:
+    name = tmux_session_name(session)
+    if _tmux_has_session(name):
+        return name
+    tmux("new-session", "-d", "-s", name, "-n", window_name(session), "-c", str(cwd), check=True, capture=True)
+    if not _tmux_has_session(name):
+        raise OrcheError(f"Failed to create tmux session for {session}")
+    return name
 
 
 def normalize_pane(session: str, cwd: Path, pane: Dict[str, str]) -> str:
@@ -1131,6 +1146,7 @@ def ensure_pane(session: str, cwd: Path, agent: str) -> str:
                         "session": session,
                         "cwd": str(cwd),
                         "agent": agent,
+                        "tmux_session": info["session_name"],
                         "pane_id": pane_id,
                         "window_id": info["window_id"],
                         "window_name": info["window_name"],
@@ -1140,11 +1156,8 @@ def ensure_pane(session: str, cwd: Path, agent: str) -> str:
                 save_meta(session, meta)
                 return pane_id
 
-        window = ensure_window(window_name(session), cwd)
-        panes = list_panes(window["window_id"])
-        if not panes:
-            tmux("split-window", "-d", "-t", window["window_id"], "-c", str(cwd), check=True, capture=True)
-            panes = list_panes(window["window_id"])
+        tmux_name = ensure_tmux_session(session, cwd)
+        panes = list_panes(tmux_name)
         if not panes:
             raise OrcheError(f"Failed to create tmux pane for {session}")
         pane = panes[0]
@@ -1155,6 +1168,7 @@ def ensure_pane(session: str, cwd: Path, agent: str) -> str:
                 "session": session,
                 "cwd": str(cwd),
                 "agent": agent,
+                "tmux_session": pane["session_name"],
                 "pane_id": pane_id,
                 "window_id": pane["window_id"],
                 "window_name": pane["window_name"],
@@ -1548,6 +1562,7 @@ def ensure_native_session(
         cwd=cwd,
         agent=agent,
         pane_id=pane_id,
+        tmux_session=str(meta.get("tmux_session") or ""),
         runtime_home="",
         runtime_home_managed=False,
         runtime_label="",
@@ -2173,6 +2188,7 @@ def ensure_session(
         cwd=cwd,
         agent=agent,
         pane_id=pane_id,
+        tmux_session=str(meta.get("tmux_session") or ""),
         runtime_home=resolved_runtime_home,
         runtime_home_managed=managed_runtime_home,
         runtime_label=runtime.label,
@@ -2268,6 +2284,7 @@ def build_status(session: str) -> Dict[str, Any]:
     meta = load_meta(session)
     pane_id = bridge_resolve(session) or str(meta.get("pane_id") or "")
     info = get_pane_info(pane_id) if pane_id else None
+    resolved_tmux_session = str((info or {}).get("session_name") or meta.get("tmux_session") or "").strip()
     cwd = str(meta.get("cwd") or (info or {}).get("pane_current_path") or "-")
     agent = str(meta.get("agent") or "codex")
     plugin = get_agent(agent)
@@ -2288,6 +2305,7 @@ def build_status(session: str) -> Dict[str, Any]:
         "runtime_label": runtime_label_from_meta(meta, plugin),
         "codex_home": str(meta.get("codex_home") or runtime_home),
         "codex_home_managed": bool(meta.get("codex_home_managed") or runtime_home_managed),
+        "tmux_session": resolved_tmux_session or "-",
         "pane_id": pane_id or "-",
         "window_name": (info or {}).get("window_name", meta.get("window_name", "-")),
         "agent_running": agent_running,
@@ -2322,6 +2340,16 @@ def current_session_id() -> str:
     if env_session:
         return env_session
 
+    current_tmux_session = _current_tmux_value("#{session_name}")
+    if current_tmux_session:
+        for entry in list_sessions():
+            session = str(entry.get("session") or "").strip()
+            if not session:
+                continue
+            mapped_tmux_session = str(entry.get("tmux_session") or tmux_session_name(session)).strip()
+            if mapped_tmux_session == current_tmux_session:
+                return session
+
     current_pane_id = _current_tmux_value("#{pane_id}")
     if current_pane_id:
         for entry in list_sessions():
@@ -2335,14 +2363,6 @@ def current_session_id() -> str:
         meta = load_meta(pane_title)
         if meta:
             return str(meta.get("session") or pane_title).strip()
-
-    window_name = _current_tmux_value("#{window_name}")
-    if window_name:
-        for entry in list_sessions():
-            if str(entry.get("window_name") or "").strip() == window_name:
-                session = str(entry.get("session") or "").strip()
-                if session:
-                    return session
 
     raise OrcheError("Unable to resolve current orche session id. Set ORCHE_SESSION or run inside an orche tmux pane.")
 
@@ -2359,12 +2379,16 @@ def close_session(session: str) -> str:
     agent = str(meta.get("agent") or "codex")
     plugin = get_agent(agent)
     pane_id = bridge_resolve(session) or str(meta.get("pane_id") or "")
+    info = get_pane_info(pane_id) if pane_id and pane_exists(pane_id) else None
+    target_tmux_session = str((info or {}).get("session_name") or meta.get("tmux_session") or "").strip()
+    if not target_tmux_session:
+        target_tmux_session = tmux_session_name(session)
     with contextlib.suppress(Exception):
         stop_session_watchdog(session)
-    if pane_id and pane_exists(pane_id):
-        info = get_pane_info(pane_id)
-        if info is not None:
-            tmux("kill-window", "-t", info["window_id"], check=False, capture=True)
+    for client_tty in list_tmux_session_clients(target_tmux_session):
+        tmux("detach-client", "-t", client_tty, check=False, capture=True)
+    if _tmux_has_session(target_tmux_session):
+        tmux("kill-session", "-t", target_tmux_session, check=False, capture=True)
     runtime_home = runtime_home_from_meta(meta)
     if runtime_home and runtime_home_managed_from_meta(meta):
         plugin.cleanup_runtime(
@@ -2385,6 +2409,7 @@ def close_session(session: str) -> str:
         config["runtime_label"] = ""
         config["codex_home"] = ""
         config["codex_home_managed"] = False
+        config["tmux_session"] = ""
         config["updated_at"] = time.time()
         save_config(config)
     remove_meta(session)
