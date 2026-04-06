@@ -19,6 +19,7 @@ Do not use this skill when OpenClaw is the supervisor and the return path is Dis
 - Treat `notify` as the return path. If the worker must report back, open it with explicit `--notify tmux:<target-session>`.
 - Treat `prompt` as fire-and-forget. After `orche prompt`, do not keep the current turn open just to watch the worker.
 - Never guess the tmux notify target. Resolve it with `orche whoami` first.
+- When you open a tmux-routed worker from inside the current supervisor session, prefer the visible inline tmux pane workflow over creating a separate detached tmux session.
 - Use managed sessions for delegated workers. A delegated worker that must report back is not a native session.
 - Create a session once, then reuse it through `prompt`, `status`, `read`, `attach`, `input`, `key`, `cancel`, or `close`. Do not call `open` again with the same explicit session name; that errors instead of reusing it.
 - Use `attach` only for human takeover or deep debugging, not as the default inspection path.
@@ -57,10 +58,12 @@ current_session="$(orche whoami)"
 # 2. open a managed worker with an explicit tmux return path
 orche open --cwd /repo --agent codex --name repo-worker --notify "tmux:${current_session}"
 
-# 3. send work
+# 3. let orche place the worker in a visible inline pane when possible
+
+# 4. send work
 orche prompt repo-worker "implement the parser refactor"
 
-# 4. end the current turn unless you have unrelated work that does not depend on the worker
+# 5. end the current turn unless you have unrelated work that does not depend on the worker
 ```
 
 Default behavior after `prompt`:

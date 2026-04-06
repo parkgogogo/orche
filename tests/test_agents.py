@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import backend
@@ -49,7 +50,7 @@ def test_ensure_managed_claude_home_writes_stop_hook(tmp_path, monkeypatch):
 
 def test_ensure_session_supports_claude_agent(xdg_runtime, tmp_path, monkeypatch):
     monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
-    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%7")
+    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent, **kwargs: "%7")
     monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%7")
 
     pane_id = backend.ensure_session(
@@ -195,3 +196,86 @@ def test_ensure_native_agent_running_uses_respawn_pane_without_send_keys(xdg_run
     assert pane_id == "%9"
     assert any(call[:4] == ("respawn-pane", "-k", "-t", "%9") for call in tmux_calls)
     assert not any(call and call[0] == "send-keys" for call in tmux_calls)
+
+
+def test_ensure_pane_inline_mode_splits_current_tmux_session(xdg_runtime, tmp_path, monkeypatch):
+    tmux_calls = []
+
+    monkeypatch.setattr(backend, "bridge_name_pane", lambda pane_id, session: None)
+
+    def fake_tmux(*args, **kwargs):
+        tmux_calls.append(args)
+        if list(args) == ["display-message", "-p", "-t", "%1", "#{pane_id}"]:
+            return subprocess.CompletedProcess(["tmux", *args], 0, "%1\n", "")
+        if args[:2] == ("split-window", "-d"):
+            return subprocess.CompletedProcess(
+                ["tmux", *args],
+                0,
+                "orche-reviewer\t%11\t@3\tmain\n",
+                "",
+            )
+        return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+
+    pane_id = backend.ensure_pane(
+        "demo-inline-worker",
+        tmp_path,
+        "codex",
+        tmux_mode="inline-pane",
+        host_pane_id="%1",
+        tmux_host_session="orche-reviewer",
+    )
+
+    meta = backend.load_meta("demo-inline-worker")
+
+    assert pane_id == "%11"
+    assert meta["tmux_mode"] == "inline-pane"
+    assert meta["host_pane_id"] == "%1"
+    assert meta["tmux_host_session"] == "orche-reviewer"
+    assert any(
+        call[:8] == ("split-window", "-d", "-h", "-p", str(backend.INLINE_PANE_PERCENT), "-t", "%1", "-c")
+        for call in tmux_calls
+    )
+
+
+def test_ensure_session_uses_inline_pane_for_tmux_notify_targeting_current_session(xdg_runtime, tmp_path, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        backend,
+        "prepare_managed_runtime",
+        lambda plugin, session, *, cwd, discord_channel_id: backend.AgentRuntime(
+            home=str(tmp_path / session),
+            managed=True,
+            label=plugin.runtime_label,
+        ),
+    )
+    monkeypatch.setattr(backend, "current_session_id", lambda: "repo-reviewer")
+    monkeypatch.setattr(
+        backend,
+        "_current_tmux_value",
+        lambda fmt: {
+            "#{session_name}": "orche-reviewer",
+            "#{pane_id}": "%2",
+        }.get(fmt, ""),
+    )
+
+    def fake_ensure_pane(session, cwd, agent, **kwargs):
+        captured.update(kwargs)
+        return "%7"
+
+    monkeypatch.setattr(backend, "ensure_pane", fake_ensure_pane)
+    monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%7")
+
+    pane_id = backend.ensure_session(
+        "repo-worker",
+        tmp_path,
+        "codex",
+        notify_to="tmux-bridge",
+        notify_target="repo-reviewer",
+    )
+
+    assert pane_id == "%7"
+    assert captured["tmux_mode"] == "inline-pane"
+    assert captured["host_pane_id"] == "%2"
+    assert captured["tmux_host_session"] == "orche-reviewer"

@@ -229,6 +229,96 @@ def test_current_session_id_prefers_tmux_session_mapping(xdg_runtime, monkeypatc
     assert backend.current_session_id() == "mapped-session"
 
 
+def test_current_session_id_prefers_pane_mapping_over_shared_tmux_session_mapping(xdg_runtime, monkeypatch):
+    monkeypatch.delenv("ORCHE_SESSION", raising=False)
+
+    def fake_tmux(*args, **kwargs):
+        if list(args) == ["display-message", "-p", "#{pane_id}"]:
+            return subprocess.CompletedProcess(["tmux"], 0, "%22\n", "")
+        if list(args) == ["display-message", "-p", "#{session_name}"]:
+            return subprocess.CompletedProcess(["tmux"], 0, "orche-reviewer\n", "")
+        return subprocess.CompletedProcess(["tmux"], 1, "", "")
+
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+    monkeypatch.setattr(
+        backend,
+        "list_sessions",
+        lambda: [
+            {"session": "reviewer", "tmux_session": "orche-reviewer", "pane_id": "%21"},
+            {"session": "worker", "tmux_session": "orche-reviewer", "pane_id": "%22"},
+        ],
+    )
+
+    assert backend.current_session_id() == "worker"
+
+
+def test_attach_session_selects_inline_pane_inside_current_tmux_session(xdg_runtime, monkeypatch):
+    backend.save_meta(
+        "demo-inline",
+        {
+            "session": "demo-inline",
+            "tmux_session": "orche-reviewer",
+            "tmux_mode": "inline-pane",
+            "pane_id": "%9",
+            "window_id": "@4",
+        },
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def fake_tmux(*args, **kwargs):
+        calls.append(tuple(args))
+        if list(args) == ["has-session", "-t", "orche-reviewer"]:
+            return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+        if list(args) == ["display-message", "-p", "#{session_name}"]:
+            return subprocess.CompletedProcess(["tmux", *args], 0, "orche-reviewer\n", "")
+        if list(args[:2]) in (["select-window", "-t"], ["select-pane", "-t"]):
+            return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+        return subprocess.CompletedProcess(["tmux", *args], 1, "", "")
+
+    monkeypatch.setenv("TMUX", "1")
+    monkeypatch.setattr(backend, "bridge_resolve", lambda session: "%9")
+    monkeypatch.setattr(backend, "get_pane_info", lambda pane_id: {"session_name": "orche-reviewer", "window_id": "@4"} if pane_id == "%9" else None)
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+
+    target = backend.attach_session("demo-inline")
+
+    assert target == "orche-reviewer"
+    assert ("select-window", "-t", "@4") in calls
+    assert ("select-pane", "-t", "%9") in calls
+    assert not any(call[:2] == ("switch-client", "-t") for call in calls)
+
+
+def test_close_session_kills_inline_pane_without_killing_tmux_session(xdg_runtime, monkeypatch):
+    backend.save_meta(
+        "demo-inline",
+        {
+            "session": "demo-inline",
+            "agent": "codex",
+            "pane_id": "%9",
+            "tmux_session": "orche-reviewer",
+            "tmux_mode": "inline-pane",
+        },
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def fake_tmux(*args, **kwargs):
+        calls.append(tuple(args))
+        if list(args[:2]) == ["kill-pane", "-t"]:
+            return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+        return subprocess.CompletedProcess(["tmux", *args], 1, "", "")
+
+    monkeypatch.setattr(backend, "bridge_resolve", lambda session: "%9")
+    monkeypatch.setattr(backend, "pane_exists", lambda pane_id: pane_id == "%9")
+    monkeypatch.setattr(backend, "get_pane_info", lambda pane_id: {"session_name": "orche-reviewer"} if pane_id == "%9" else None)
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+
+    pane_id = backend.close_session("demo-inline")
+
+    assert pane_id == "%9"
+    assert ("kill-pane", "-t", "%9") in calls
+    assert not any(call[:2] == ("kill-session", "-t") for call in calls)
+
+
 def test_config_supports_discord_mention_user_id(xdg_runtime):
     runner = CliRunner()
 
@@ -375,6 +465,7 @@ def test_open_expands_cwd_user_home_for_native_session(xdg_runtime, monkeypatch)
     assert captured["cwd"] == project_dir.resolve()
     assert captured["agent"] == "codex"
     assert captured["cli_args"] == ["--model", "gpt-5.4"]
+    assert "open ok: session=project-codex-abc123" in result.output
 
 
 def test_open_passes_notify_binding_to_managed_session(xdg_runtime, monkeypatch):
@@ -411,6 +502,7 @@ def test_open_passes_notify_binding_to_managed_session(xdg_runtime, monkeypatch)
     assert captured["session"] == "project-codex-abc123"
     assert captured["kwargs"]["notify_to"] == "tmux-bridge"
     assert captured["kwargs"]["notify_target"] == "target-session"
+    assert "open ok: session=project-codex-abc123" in result.output
 
 
 def test_open_rejects_existing_session_name(xdg_runtime, monkeypatch):
@@ -497,6 +589,7 @@ def test_attach_command_uses_session_name_positionally(xdg_runtime, monkeypatch)
     assert result.exit_code == 0
     assert recorded["session"] == "demo-session"
     assert recorded["action"] == "attach"
+    assert "attach ok: session=demo-session target=@1" in result.output
 
 
 def test_codex_shortcut_opens_native_session_and_attaches(xdg_runtime, monkeypatch):
@@ -589,6 +682,7 @@ def test_prompt_command_uses_positionals(xdg_runtime, monkeypatch):
         "agent": "codex",
         "message": "review auth changes",
     }
+    assert "prompt ok: session=demo-session" in result.output
 
 
 def test_input_and_key_commands_use_positionals(xdg_runtime, monkeypatch):
@@ -613,6 +707,44 @@ def test_input_and_key_commands_use_positionals(xdg_runtime, monkeypatch):
     assert key_result.exit_code == 0
     assert input_calls == [("demo-session", "yes")]
     assert key_calls == [("demo-session", ["Down", "Enter"])]
+    assert "input ok: session=demo-session chars=3" in input_result.output
+    assert "key ok: session=demo-session keys=Down,Enter" in key_result.output
+
+
+def test_cancel_command_prints_machine_readable_success(xdg_runtime, monkeypatch):
+    runner = CliRunner()
+    project_dir = xdg_runtime["home"] / "project"
+    project_dir.mkdir()
+    monkeypatch.setattr(
+        cli,
+        "resolve_session_context",
+        lambda **kwargs: (project_dir.resolve(), "codex", {"session": "demo-session"}),
+    )
+    monkeypatch.setattr(cli, "cancel_session", lambda session: "%7")
+    monkeypatch.setattr(cli, "append_action_history", lambda *args, **kwargs: None)
+
+    result = runner.invoke(app, ["cancel", "demo-session"])
+
+    assert result.exit_code == 0
+    assert "cancel ok: session=demo-session pane=%7" in result.output
+
+
+def test_close_command_prints_machine_readable_success(xdg_runtime, monkeypatch):
+    runner = CliRunner()
+    project_dir = xdg_runtime["home"] / "project"
+    project_dir.mkdir()
+    monkeypatch.setattr(
+        cli,
+        "resolve_session_context",
+        lambda **kwargs: (project_dir.resolve(), "codex", {"session": "demo-session"}),
+    )
+    monkeypatch.setattr(cli, "close_session", lambda session: "%8")
+    monkeypatch.setattr(cli, "append_action_history", lambda *args, **kwargs: None)
+
+    result = runner.invoke(app, ["close", "demo-session"])
+
+    assert result.exit_code == 0
+    assert "close ok: session=demo-session pane=%8" in result.output
 
 
 def test_key_help_explains_sequence_usage():
