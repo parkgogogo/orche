@@ -61,6 +61,7 @@ from notify import (
 )
 from paths import ensure_directories
 from version import __version__
+from self_update import SelfUpdateError, perform_self_update
 
 
 class ShortHelpTyperGroup(TyperGroup):
@@ -406,6 +407,23 @@ def session_id() -> None:
 @app.command("whoami")
 def whoami() -> None:
     session_id()
+
+
+@app.command("update")
+def update_command(
+    version: Optional[str] = typer.Option(None, "--version", help="Target release tag. Defaults to the latest published binary."),
+) -> None:
+    try:
+        result = perform_self_update(requested_version=version)
+        _print_action_ok(
+            "update",
+            version=result.version,
+            target=result.target,
+            path=result.link_path,
+            updated="yes" if result.updated else "no",
+        )
+    except (SelfUpdateError, OrcheError, subprocess.CalledProcessError) as exc:
+        _handle_error(exc)
 
 
 @config_app.command("get")
