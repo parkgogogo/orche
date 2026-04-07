@@ -5,6 +5,13 @@ REPO="${ORCHE_INSTALL_REPO:-parkgogogo/tmux-orche}"
 PREFIX="${ORCHE_INSTALL_PREFIX:-$HOME/.local/bin}"
 BIN_NAME="orche"
 
+xdg_data_home() {
+  printf '%s\n' "${XDG_DATA_HOME:-$HOME/.local/share}"
+}
+
+INSTALL_ROOT="${ORCHE_INSTALL_ROOT:-$(xdg_data_home)/orche/releases}"
+METADATA_PATH="${ORCHE_INSTALL_METADATA_PATH:-$(xdg_data_home)/orche/install.json}"
+
 say() {
   printf '%s\n' "$*"
 }
@@ -16,6 +23,27 @@ fail() {
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+}
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+resolve_payload() {
+  payload_root="$1"
+  if [ -x "${payload_root}/${BIN_NAME}/${BIN_NAME}" ]; then
+    printf '%s\n' "${payload_root}/${BIN_NAME}"
+    return
+  fi
+  if [ -f "${payload_root}/${BIN_NAME}" ]; then
+    legacy_dir="${payload_root}/.orche-legacy"
+    mkdir -p "${legacy_dir}"
+    cp "${payload_root}/${BIN_NAME}" "${legacy_dir}/${BIN_NAME}"
+    chmod 755 "${legacy_dir}/${BIN_NAME}"
+    printf '%s\n' "${legacy_dir}"
+    return
+  fi
+  fail "archive did not contain ${BIN_NAME} or ${BIN_NAME}/${BIN_NAME}"
 }
 
 resolve_version() {
@@ -71,6 +99,9 @@ main() {
   need_cmd tar
   need_cmd mktemp
   need_cmd install
+  need_cmd cp
+  need_cmd ln
+  need_cmd sed
 
   version="$(resolve_version)"
   target="$(detect_target)"
@@ -85,9 +116,40 @@ main() {
 
   mkdir -p "${PREFIX}"
   tar -xzf "${tmpdir}/${archive}" -C "${tmpdir}"
-  install "${tmpdir}/${BIN_NAME}" "${PREFIX}/${BIN_NAME}"
+  source_dir="$(resolve_payload "${tmpdir}")"
+  executable_path="${source_dir}/${BIN_NAME}"
+  [ -x "${executable_path}" ] || fail "archive did not contain executable ${BIN_NAME}"
 
-  say "Installed ${BIN_NAME} ${version} to ${PREFIX}/${BIN_NAME}"
+  release_dir="${INSTALL_ROOT}/${version}/${target}"
+  rm -rf "${release_dir}"
+  mkdir -p "$(dirname "${release_dir}")"
+  cp -R "${source_dir}" "${release_dir}"
+
+  link_path="${PREFIX}/${BIN_NAME}"
+  if [ -d "${link_path}" ] && [ ! -L "${link_path}" ]; then
+    fail "refusing to replace directory at ${link_path}"
+  fi
+  rm -f "${link_path}"
+  ln -s "${release_dir}/${BIN_NAME}" "${link_path}"
+
+  mkdir -p "$(dirname "${METADATA_PATH}")"
+  metadata_tmp="${tmpdir}/install.json"
+  cat > "${metadata_tmp}" <<EOF
+{
+  "channel": "prebuilt-binary",
+  "repo": "$(json_escape "${REPO}")",
+  "version": "$(json_escape "${version}")",
+  "target": "$(json_escape "${target}")",
+  "prefix": "$(json_escape "${PREFIX}")",
+  "link_path": "$(json_escape "${link_path}")",
+  "install_root": "$(json_escape "${INSTALL_ROOT}")",
+  "executable_path": "$(json_escape "${release_dir}/${BIN_NAME}")"
+}
+EOF
+  install -m 644 "${metadata_tmp}" "${METADATA_PATH}"
+
+  say "Installed ${BIN_NAME} ${version} to ${link_path}"
+  say "Runtime files: ${release_dir}"
   case ":${PATH}:" in
     *":${PREFIX}:"*) ;;
     *)

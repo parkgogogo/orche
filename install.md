@@ -101,10 +101,16 @@ By default the script installs `orche` to:
 ~/.local/bin/orche
 ```
 
+The binary runtime is unpacked under:
+
+```bash
+~/.local/share/orche/releases/
+```
+
 Optional environment variables:
 
 ```bash
-ORCHE_INSTALL_VERSION=v0.4.35
+ORCHE_INSTALL_VERSION=v0.4.37
 ORCHE_INSTALL_PREFIX="$HOME/bin"
 ```
 
@@ -112,8 +118,16 @@ Examples:
 
 ```bash
 curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | ORCHE_INSTALL_PREFIX="$HOME/bin" sh
-curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | ORCHE_INSTALL_VERSION=v0.4.35 sh
+curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | ORCHE_INSTALL_VERSION=v0.4.37 sh
 ```
+
+To update a binary install later:
+
+```bash
+orche update
+```
+
+`orche update` is intended for installs managed by `install.sh`. If you installed via `pip`, `uv`, or source checkout, update with the same tool you used to install it.
 
 ### Option B: `pip`
 
