@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.46 - 2026-04-07
+
+- Remove watchdog-driven `completed` notifications so watchdog only reports degraded states such as `stalled`, `needs-input`, and `failed`.
+- Keep turn completion owned by native notify paths instead of capture-surface heuristics.
+- Add regression coverage to ensure completion-looking terminal output no longer causes watchdog to finalize turns.
+
 ## v0.4.31 - 2026-04-06
 
 - Sync Claude workspace trust into the source `~/.claude.json` project entry before cloning managed runtimes so managed Claude sessions no longer miss the trust-folder state that Codex already inherits.

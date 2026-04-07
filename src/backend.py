@@ -2219,7 +2219,6 @@ def run_session_watchdog(
         pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else None
         if not pending_turn or str(pending_turn.get("turn_id") or "") != turn_id:
             return "completed"
-        plugin = get_agent(str(meta.get("agent") or "codex"))
         watchdog = pending_turn.get("watchdog") if isinstance(pending_turn.get("watchdog"), dict) else {}
         if bool(watchdog.get("stop_requested")):
             update_watchdog_metadata(
@@ -2229,61 +2228,7 @@ def run_session_watchdog(
             )
             return "stopped"
         sample = sample_watchdog_state(session, pane_id=str(pending_turn.get("pane_id") or meta.get("pane_id") or ""))
-        sample_capture = str(sample.get("capture") or "")
-        completion_summary = _pending_turn_completion_summary(
-            plugin,
-            pending_turn=pending_turn,
-            capture=sample_capture,
-        )
         now = time.time()
-        if completion_summary:
-            ready, pending_values = _watchdog_pending_event_ready(
-                watchdog,
-                event="completed",
-                summary=completion_summary,
-                now=now,
-                notify_buffer=notify_buffer,
-            )
-            if not ready:
-                update_watchdog_metadata(
-                    session,
-                    turn_id=turn_id,
-                    values={
-                        "state": "completion-pending",
-                        **pending_values,
-                    },
-                )
-                time.sleep(max(0.5, poll_interval))
-                continue
-            if pending_values:
-                update_watchdog_metadata(session, turn_id=turn_id, values=pending_values)
-            emitted = emit_internal_notify(
-                session,
-                event="completed",
-                summary=completion_summary,
-                status="success",
-                turn_id=turn_id,
-                cwd=str(meta.get("cwd") or ""),
-                source="watchdog",
-                tail_text=sample_capture,
-            )
-            if not emitted:
-                complete_pending_turn(
-                    session,
-                    summary=completion_summary,
-                    turn_id=turn_id,
-                    prompt=str(pending_turn.get("prompt") or ""),
-                )
-            update_watchdog_metadata(
-                session,
-                turn_id=turn_id,
-                values={
-                    "state": "completed",
-                    "last_event": "completed",
-                    "last_event_at": now,
-                },
-            )
-            return "completed"
         previous_signature = str(watchdog.get("last_signature") or "")
         previous_cursor = (
             str(watchdog.get("last_cursor_x") or ""),

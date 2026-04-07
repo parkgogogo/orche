@@ -445,7 +445,7 @@ def test_pending_turn_completion_summary_falls_back_to_full_capture_when_delta_c
     assert summary == "OK42"
 
 
-def test_run_session_watchdog_completes_turn_when_capture_shows_completion(xdg_runtime, tmp_path, monkeypatch):
+def test_run_session_watchdog_does_not_complete_turn_when_capture_shows_completion(xdg_runtime, tmp_path, monkeypatch):
     session = "demo-inline-watchdog"
     backend.save_meta(
         session,
@@ -474,6 +474,7 @@ def test_run_session_watchdog_completes_turn_when_capture_shows_completion(xdg_r
         "› Implement {feature}\n"
     )
     emitted = []
+    sleep_calls = []
 
     monkeypatch.setattr(
         backend,
@@ -488,14 +489,25 @@ def test_run_session_watchdog_completes_turn_when_capture_shows_completion(xdg_r
         },
     )
     monkeypatch.setattr(backend, "emit_internal_notify", lambda *args, **kwargs: emitted.append(kwargs) or False)
+    original_sleep = backend.time.sleep
+
+    def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        if len(sleep_calls) == 2:
+            meta = backend.load_meta(session)
+            meta.pop("pending_turn", None)
+            backend.save_meta(session, meta)
+        original_sleep(0)
+
+    monkeypatch.setattr(backend.time, "sleep", fake_sleep)
 
     result = backend.run_session_watchdog(session, turn_id="turn-1", poll_interval=0.01, notify_buffer=0.0)
     meta = backend.load_meta(session)
 
     assert result == "completed"
-    assert emitted and emitted[0]["event"] == "completed"
+    assert emitted == []
     assert "pending_turn" not in meta
-    assert meta["last_completed_turn"]["summary"] == "OK42"
+    assert "last_completed_turn" not in meta
 
 
 def test_wait_for_agent_process_start_surfaces_explicit_launch_error(monkeypatch):
