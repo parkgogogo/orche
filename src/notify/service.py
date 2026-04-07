@@ -132,6 +132,7 @@ def dispatch_payload(
         runtime_config=runtime_config,
         summary_loader=summary_loader,
         explicit_session=explicit_session,
+        explicit_channel_id=explicit_channel_id,
         status=status,
     )
     if event is None:

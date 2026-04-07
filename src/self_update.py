@@ -4,6 +4,7 @@ import json
 import os
 import platform
 import shutil
+import sys
 import tarfile
 import tempfile
 import urllib.error
@@ -32,6 +33,17 @@ class UpdateResult:
     link_path: Path
     install_root: Path
     updated: bool
+
+
+@dataclass(frozen=True)
+class InstallContext:
+    repo: str
+    version: str
+    target: str
+    prefix: Path
+    link_path: Path
+    install_root: Path
+    executable_path: Path
 
 
 def install_metadata_path() -> Path:
@@ -88,6 +100,126 @@ def detect_target() -> str:
     if target not in {"darwin-arm64", "darwin-x64", "linux-x64"}:
         raise SelfUpdateError(f"No prebuilt binary is published for {target}")
     return target
+
+
+def runtime_link_path() -> Optional[Path]:
+    argv0 = str(sys.argv[0] or "").strip()
+    if argv0:
+        candidate = Path(argv0).expanduser()
+        if candidate.name == BIN_NAME:
+            return candidate if candidate.is_absolute() else candidate.resolve()
+    if getattr(sys, "frozen", False):
+        resolved = shutil.which(BIN_NAME)
+        if resolved:
+            return Path(resolved).expanduser().resolve()
+    return None
+
+
+def runtime_executable_path() -> Optional[Path]:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).expanduser().resolve()
+    link_path = runtime_link_path()
+    if link_path is None:
+        return None
+    return link_path.resolve()
+
+
+def infer_install_context(
+    metadata: Optional[dict[str, Any]],
+    *,
+    repo: Optional[str] = None,
+) -> InstallContext:
+    link_path = runtime_link_path()
+    executable_path = runtime_executable_path()
+    metadata_target = str((metadata or {}).get("target") or "").strip()
+    target = detect_target() if link_path is not None else (metadata_target or detect_target())
+
+    if link_path is None:
+        link_path_value = str((metadata or {}).get("link_path") or "").strip()
+        if not link_path_value:
+            raise SelfUpdateError("Install metadata is missing link_path")
+        link_path = Path(link_path_value).expanduser().resolve()
+    if executable_path is None:
+        executable_value = str((metadata or {}).get("executable_path") or "").strip()
+        if executable_value:
+            executable_path = Path(executable_value).expanduser().resolve()
+        else:
+            executable_path = link_path.resolve()
+
+    resolved_repo = str(repo or (metadata or {}).get("repo") or DEFAULT_RELEASE_REPO).strip() or DEFAULT_RELEASE_REPO
+    version = str((metadata or {}).get("version") or "").strip()
+    install_root_value = str((metadata or {}).get("install_root") or "").strip()
+    prefix_value = str((metadata or {}).get("prefix") or "").strip()
+
+    if executable_path.parent.name == target:
+        inferred_version = executable_path.parent.parent.name
+        inferred_install_root = executable_path.parent.parent.parent
+        if inferred_version:
+            version = inferred_version
+        install_root = inferred_install_root
+    else:
+        install_root = Path(install_root_value).expanduser().resolve() if install_root_value else executable_path.parent
+
+    prefix = link_path.parent.resolve() if runtime_link_path() is not None else (
+        Path(prefix_value).expanduser().resolve() if prefix_value else link_path.parent.resolve()
+    )
+    if not version:
+        version = str((metadata or {}).get("version") or "").strip()
+
+    return InstallContext(
+        repo=resolved_repo,
+        version=version,
+        target=target,
+        prefix=prefix,
+        link_path=link_path.resolve() if link_path.is_absolute() else link_path,
+        install_root=install_root,
+        executable_path=executable_path,
+    )
+
+
+def metadata_matches_context(metadata: Optional[dict[str, Any]], context: InstallContext) -> bool:
+    if not metadata:
+        return False
+    if str(metadata.get("channel") or "").strip() != INSTALL_CHANNEL:
+        return False
+    if str(metadata.get("target") or "").strip() != context.target:
+        return False
+    if str(metadata.get("repo") or "").strip() not in {"", context.repo}:
+        return False
+    link_path_value = str(metadata.get("link_path") or "").strip()
+    executable_value = str(metadata.get("executable_path") or "").strip()
+    install_root_value = str(metadata.get("install_root") or "").strip()
+    prefix_value = str(metadata.get("prefix") or "").strip()
+    if not link_path_value or not executable_value or not install_root_value or not prefix_value:
+        return False
+    try:
+        metadata_link_path = Path(link_path_value).expanduser().resolve()
+        metadata_executable_path = Path(executable_value).expanduser().resolve()
+        metadata_install_root = Path(install_root_value).expanduser().resolve()
+        metadata_prefix = Path(prefix_value).expanduser().resolve()
+    except OSError:
+        return False
+    return (
+        metadata_link_path == context.link_path.resolve()
+        and metadata_executable_path == context.executable_path.resolve()
+        and metadata_install_root == context.install_root.resolve()
+        and metadata_prefix == context.prefix.resolve()
+    )
+
+
+def save_install_context(context: InstallContext) -> None:
+    save_install_metadata(
+        {
+            "channel": INSTALL_CHANNEL,
+            "repo": context.repo,
+            "version": context.version,
+            "target": context.target,
+            "prefix": str(context.prefix),
+            "link_path": str(context.link_path),
+            "install_root": str(context.install_root),
+            "executable_path": str(context.executable_path),
+        }
+    )
 
 
 def resolve_version(repo: str, requested_version: Optional[str]) -> str:
@@ -231,21 +363,19 @@ def perform_self_update(
             "orche update is only supported for prebuilt binary installs managed by install.sh"
         )
 
-    resolved_repo = str(repo or metadata.get("repo") or DEFAULT_RELEASE_REPO).strip()
-    target = str(metadata.get("target") or detect_target()).strip()
-    raw_prefix = str(metadata.get("prefix") or "").strip()
-    raw_install_root = str(metadata.get("install_root") or "").strip()
-    if not raw_prefix:
-        raise SelfUpdateError("Install metadata is missing prefix")
-    if not raw_install_root:
-        raise SelfUpdateError("Install metadata is missing install_root")
-    prefix = Path(raw_prefix).expanduser()
-    install_root = Path(raw_install_root).expanduser()
+    install_context = infer_install_context(metadata, repo=repo)
+    if not metadata_matches_context(metadata, install_context):
+        save_install_context(install_context)
+
+    resolved_repo = install_context.repo
+    target = install_context.target
+    prefix = install_context.prefix
+    install_root = install_context.install_root
 
     version = resolve_version(resolved_repo, requested_version)
     expected_link = prefix.resolve() / BIN_NAME
     expected_executable = install_root.resolve() / version / target / BIN_NAME
-    current_version = str(metadata.get("version") or "").strip()
+    current_version = install_context.version
     if current_version == version and expected_link.is_symlink():
         try:
             if expected_link.resolve() == expected_executable:

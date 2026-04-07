@@ -23,6 +23,7 @@ from agents.codex import CodexAgent, SOURCE_CONFIG_BACKUP_SUFFIX, default_codex_
 from agents.common import (
     ensure_orche_shim,
     normalize_runtime_home,
+    orche_bootstrap_command,
     remove_runtime_home,
     validate_discord_channel_id as common_validate_discord_channel_id,
     write_text_atomically,
@@ -52,8 +53,12 @@ CONFIG_COMMENT = (
 )
 DEFAULT_CODEX_HOME_ROOT = codex_agent_module.DEFAULT_RUNTIME_HOME_ROOT
 DEFAULT_CODEX_SOURCE_HOME = codex_agent_module.DEFAULT_CODEX_SOURCE_HOME
+DEFAULT_CLAUDE_COMMAND = claude_agent_module.DEFAULT_CLAUDE_COMMAND
+DEFAULT_CLAUDE_SOURCE_CONFIG_PATH = claude_agent_module.DEFAULT_CLAUDE_SOURCE_CONFIG_PATH
 SUPPORTED_NOTIFY_PROVIDERS = ("discord", "tmux-bridge")
 CONFIG_KEY_MAP = {
+    "claude.command": "claude_command",
+    "claude.config-path": "claude_config_path",
     "discord.bot-token": "discord_bot_token",
     "discord.mention-user-id": "notify_mention_user_id",
     "discord.webhook-url": "discord_webhook_url",
@@ -229,10 +234,12 @@ def run(
     capture: bool = False,
     cwd: Optional[Path] = None,
     env: Optional[Dict[str, str]] = None,
+    input_text: Optional[str] = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         cmd,
         text=True,
+        input=input_text,
         check=check,
         capture_output=capture,
         cwd=None if cwd is None else str(cwd),
@@ -246,9 +253,14 @@ def require_tmux() -> None:
     raise OrcheError("tmux is not installed; orche requires tmux")
 
 
-def tmux(*args: str, check: bool = True, capture: bool = True) -> subprocess.CompletedProcess[str]:
+def tmux(
+    *args: str,
+    check: bool = True,
+    capture: bool = True,
+    input_text: Optional[str] = None,
+) -> subprocess.CompletedProcess[str]:
     require_tmux()
-    return run(["tmux", *args], check=check, capture=capture)
+    return run(["tmux", *args], check=check, capture=capture, input_text=input_text)
 
 
 def _known_tmux_sessions() -> Tuple[str, ...]:
@@ -342,7 +354,20 @@ def _tmux_bridge_dispatch(*args: str) -> subprocess.CompletedProcess[str]:
             raise OrcheError("tmux-bridge type requires <session> <text>")
         session, text = args[1], args[2]
         pane_id = _resolve_bridge_pane(session)
-        tmux("send-keys", "-t", pane_id, "-l", text, check=True, capture=True)
+        buffer_name = f"orche-{uuid.uuid4().hex}"
+        try:
+            tmux(
+                "load-buffer",
+                "-b",
+                buffer_name,
+                "-",
+                check=True,
+                capture=True,
+                input_text=text,
+            )
+            tmux("paste-buffer", "-t", pane_id, "-b", buffer_name, check=True, capture=True)
+        finally:
+            tmux("delete-buffer", "-b", buffer_name, check=False, capture=True)
         return _bridge_result(args)
     if command == "keys":
         if len(args) < 3:
@@ -822,6 +847,8 @@ def load_config() -> Dict[str, Any]:
     ensure_directories()
     default = {
         "_comment": CONFIG_COMMENT,
+        "claude_command": "",
+        "claude_config_path": "",
         "codex_turn_complete_channel_id": "",
         "discord_bot_token": "",
         "discord_channel_id": "",
@@ -1088,6 +1115,14 @@ def supported_agent_names() -> Tuple[str, ...]:
 
 def get_agent(name: str) -> AgentPlugin:
     try:
+        config = load_config()
+        claude_agent_module.DEFAULT_CLAUDE_COMMAND = str(config.get("claude_command") or "").strip() or DEFAULT_CLAUDE_COMMAND
+        claude_config_path = str(config.get("claude_config_path") or "").strip()
+        claude_agent_module.DEFAULT_CLAUDE_SOURCE_CONFIG_PATH = (
+            Path(claude_config_path).expanduser()
+            if claude_config_path
+            else DEFAULT_CLAUDE_SOURCE_CONFIG_PATH
+        )
         return get_agent_plugin(name)
     except ValueError as exc:
         raise OrcheError(str(exc)) from exc
@@ -1529,7 +1564,9 @@ def build_native_agent_launch_command(
     cwd: Path,
     cli_args: Sequence[str],
 ) -> str:
-    command = [plugin.name, *plugin.native_launch_args(cwd=cwd, cli_args=cli_args)]
+    command_tokens = plugin.command_tokens()
+    binary = command_tokens[0]
+    command = [*command_tokens, *plugin.native_launch_args(cwd=cwd, cli_args=cli_args)]
     prefix = [f"cd {shlex.quote(str(cwd))}"]
     orche_shim = ensure_orche_shim()
     prefix.append(f"export ORCHE_BIN={shlex.quote(str(orche_shim))}")
@@ -1538,11 +1575,11 @@ def build_native_agent_launch_command(
         prefix.append(f"export ORCHE_SESSION={shlex.quote(session)}")
     launch_error = (
         f"{LAUNCH_ERROR_PREFIX} {plugin.display_name} CLI not found in PATH. "
-        f"Install {plugin.name} or add it to PATH."
+        f"Install {binary} or add it to PATH."
     )
     prefix.append(
         "if ! command -v "
-        f"{shlex.quote(plugin.name)} >/dev/null 2>&1; "
+        f"{shlex.quote(binary)} >/dev/null 2>&1; "
         f"then printf '%s\\n' {shlex.quote(launch_error)} >&2; sleep 2; exit 127; fi"
     )
     prefix.append(f"exec {' '.join(shlex.quote(part) for part in command)}")
@@ -1809,15 +1846,7 @@ def update_watchdog_metadata(
 
 
 def _orche_bootstrap_command() -> List[str]:
-    module_dir = Path(__file__).resolve().parent
-    bootstrap = (
-        "import sys; "
-        f"sys.path.insert(0, {str(module_dir)!r}); "
-        "import cli; "
-        "sys.argv = ['orche', *sys.argv[1:]]; "
-        "raise SystemExit(cli.main())"
-    )
-    return [sys.executable, "-c", bootstrap]
+    return orche_bootstrap_command()
 
 
 def emit_internal_notify(
@@ -1832,6 +1861,8 @@ def emit_internal_notify(
     notification_key: str = "",
     tail_text: str = "",
 ) -> bool:
+    notify_provider = _read_notify_binding(load_meta(session)).get("provider", "")
+    normalized_tail_text = recent_capture_excerpt(tail_text) if notify_provider == "discord" else tail_text.strip()
     payload = {
         "event": event,
         "summary": summary,
@@ -1845,9 +1876,9 @@ def emit_internal_notify(
             "notification_key": notification_key,
         },
     }
-    if tail_text.strip():
-        payload["metadata"]["tail_text"] = tail_text.strip()
-        payload["metadata"]["tail_lines"] = NOTIFY_TAIL_LINES
+    if normalized_tail_text:
+        payload["metadata"]["tail_text"] = normalized_tail_text
+        payload["metadata"]["tail_lines"] = max(1, len(normalized_tail_text.splitlines()))
     command = _orche_bootstrap_command() + ["notify-internal", "--session", session, "--status", status]
     result = subprocess.run(
         command,
@@ -2200,7 +2231,7 @@ def run_session_watchdog(
                 turn_id=turn_id,
                 cwd=str(meta.get("cwd") or ""),
                 source="watchdog",
-                tail_text=recent_capture_excerpt(sample_capture),
+                tail_text=sample_capture,
             )
             if not emitted:
                 complete_pending_turn(
@@ -2329,7 +2360,7 @@ def run_session_watchdog(
                         turn_id=turn_id,
                         cwd=str(meta.get("cwd") or ""),
                         source="watchdog",
-                        tail_text=recent_capture_excerpt(str(sample.get("capture") or "")),
+                        tail_text=str(sample.get("capture") or ""),
                     )
             update_watchdog_metadata(
                 session,

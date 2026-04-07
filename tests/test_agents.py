@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import subprocess
 from pathlib import Path
 
@@ -94,6 +95,27 @@ def test_ensure_managed_claude_home_preserves_existing_source_config(tmp_path, m
     assert source_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
 
 
+def test_ensure_managed_claude_home_uses_configured_source_config_path(xdg_runtime, tmp_path, monkeypatch):
+    configured_path = tmp_path / "config" / "claude-custom.json"
+    backend.save_config(
+        {
+            "_comment": "runtime",
+            "claude_config_path": str(configured_path),
+        }
+    )
+    monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
+
+    target = backend.ensure_managed_claude_home(
+        "repo-claude-main",
+        cwd=tmp_path,
+        discord_channel_id=None,
+    )
+
+    assert Path(target).exists()
+    source_payload = json.loads(configured_path.read_text(encoding="utf-8"))
+    assert source_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
+
+
 def test_ensure_session_supports_claude_agent(xdg_runtime, tmp_path, monkeypatch):
     monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
     monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent, **kwargs: "%7")
@@ -141,6 +163,27 @@ def test_claude_agent_matches_node_frontend_process():
     assert plugin.matches_process("bash", ["node /opt/homebrew/bin/claude"])
 
 
+def test_get_agent_applies_configured_claude_command_and_process_match(xdg_runtime):
+    backend.save_config(
+        {
+            "_comment": "runtime",
+            "claude_command": "/opt/tools/claude-wrapper",
+        }
+    )
+
+    plugin = backend.get_agent("claude")
+    launch_command = backend.build_native_agent_launch_command(
+        plugin,
+        session="demo-claude",
+        cwd=Path("/tmp/repo"),
+        cli_args=(),
+    )
+
+    assert plugin.matches_process("claude-wrapper", [])
+    assert "command -v /opt/tools/claude-wrapper" in launch_command
+    assert "exec /opt/tools/claude-wrapper --dangerously-skip-permissions" in launch_command
+
+
 def test_claude_completion_summary_requires_returned_prompt():
     plugin = backend.ClaudeAgent()
     capture = (
@@ -165,6 +208,32 @@ def test_orche_shim_executes_repo_cli(xdg_runtime):
 
     assert "sys.path.insert(0," in content
     assert str(Path(backend.__file__).resolve().parent) in content
+
+
+def test_orche_shim_executes_current_orche_binary_when_available(xdg_runtime, monkeypatch, tmp_path):
+    binary = tmp_path / "orche"
+    binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    binary.chmod(0o755)
+
+    monkeypatch.setattr(sys, "argv", [str(binary)])
+
+    shim = backend.ensure_orche_shim()
+    content = shim.read_text(encoding="utf-8")
+
+    assert f'exec {binary.resolve()} "$@"' in content
+    assert "sys.path.insert(0," not in content
+
+
+def test_orche_bootstrap_command_prefers_current_binary(xdg_runtime, monkeypatch, tmp_path):
+    binary = tmp_path / "orche"
+    binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    binary.chmod(0o755)
+
+    monkeypatch.setattr(sys, "argv", [str(binary)])
+
+    command = backend._orche_bootstrap_command()
+
+    assert command == [str(binary.resolve())]
 
 
 def test_build_native_agent_launch_command_checks_cli_presence(xdg_runtime, tmp_path):

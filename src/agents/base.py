@@ -62,6 +62,9 @@ class AgentPlugin(ABC):
         _ = cwd
         return [str(value) for value in cli_args]
 
+    def command_tokens(self) -> list[str]:
+        return [self.name]
+
     def extract_completion_summary(self, capture: str, prompt: str) -> str:
         _ = (capture, prompt)
         return ""

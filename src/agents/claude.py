@@ -31,6 +31,8 @@ READY_SURFACE_HINTS = (
 )
 SOURCE_CONFIG_LOCK_NAME = "claude-source-config"
 SOURCE_CONFIG_BACKUP_SUFFIX = ".orche.bak"
+DEFAULT_CLAUDE_COMMAND = "claude"
+DEFAULT_CLAUDE_SOURCE_CONFIG_PATH = Path.home() / ".claude.json"
 
 
 def _compact_prompt_text(value: str) -> str:
@@ -126,8 +128,22 @@ def default_settings_path(runtime_home: Path) -> Path:
     return runtime_home / "settings.json"
 
 
+def claude_command_tokens() -> list[str]:
+    raw = str(DEFAULT_CLAUDE_COMMAND or "").strip() or "claude"
+    tokens = [token for token in shlex.split(raw) if token]
+    return tokens or ["claude"]
+
+
+def claude_process_names() -> set[str]:
+    primary = Path(claude_command_tokens()[0]).name.lower()
+    names = {"claude", "claude-code", "node"}
+    if primary:
+        names.add(primary)
+    return names
+
+
 def source_claude_config_path() -> Path:
-    return Path.home() / ".claude.json"
+    return Path(DEFAULT_CLAUDE_SOURCE_CONFIG_PATH).expanduser()
 
 
 def source_claude_config_backup_path() -> Path:
@@ -277,7 +293,12 @@ class ClaudeAgent(AgentPlugin):
         if discord_channel_id:
             prefix.append(f"export ORCHE_DISCORD_CHANNEL_ID={shlex.quote(validate_discord_channel_id(discord_channel_id))}")
         settings_path = default_settings_path(Path(normalize_runtime_home(runtime.home)))
-        command = ["claude", "--dangerously-skip-permissions", "--settings", str(settings_path)]
+        command = [
+            *self.command_tokens(),
+            "--dangerously-skip-permissions",
+            "--settings",
+            str(settings_path),
+        ]
         prefix.append(f"exec {' '.join(shlex.quote(part) for part in command)}")
         return " && ".join(prefix)
 
@@ -288,8 +309,11 @@ class ClaudeAgent(AgentPlugin):
             return args
         return ["--dangerously-skip-permissions", *args]
 
+    def command_tokens(self) -> list[str]:
+        return claude_command_tokens()
+
     def matches_process(self, pane_command: str, descendant_commands: list[str]) -> bool:
-        if pane_command in {"claude", "node"}:
+        if pane_command in claude_process_names():
             return True
         for proc in descendant_commands:
             lowered = proc.lower()
@@ -312,7 +336,10 @@ class ClaudeAgent(AgentPlugin):
 
 
 def re_matches_claude(command: str) -> bool:
-    return "claude" in command or "claude-code" in command
+    lowered = str(command or "").lower()
+    if "claude" in lowered or "claude-code" in lowered:
+        return True
+    return any(name != "node" and name in lowered for name in claude_process_names())
 
 
 PLUGINS = [ClaudeAgent()]
