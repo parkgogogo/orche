@@ -4,9 +4,21 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [[ -z "${PYTHON_BIN}" ]]; then
+  if command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+  else
+    echo "python or python3 is required to build the binary" >&2
+    exit 1
+  fi
+fi
+
 rm -rf build-nuitka dist
 
-python -m nuitka \
+"${PYTHON_BIN}" -m nuitka \
   --standalone \
   --static-libpython=no \
   --assume-yes-for-downloads \

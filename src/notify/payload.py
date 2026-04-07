@@ -216,6 +216,23 @@ def _assistant_message(payload: Mapping[str, Any]) -> str:
     )
 
 
+def _target_provider(
+    *,
+    runtime_config: Mapping[str, Any],
+    notify_config: NotifyConfig,
+    explicit_channel_id: str = "",
+) -> str:
+    if str(explicit_channel_id or "").strip():
+        return "discord"
+    binding = runtime_config.get("notify_binding")
+    if isinstance(binding, Mapping):
+        provider = str(binding.get("provider") or "").strip()
+        target = str(binding.get("target") or "").strip()
+        if provider and target:
+            return provider
+    return str(notify_config.provider or "").strip()
+
+
 def _payload_transcript_path(payload: Mapping[str, Any]) -> str:
     return _first_string(
         payload.get("transcript_path"),
@@ -376,6 +393,7 @@ def build_message_from_payload(
     runtime_config: Mapping[str, Any],
     summary_loader: Callable[[str], str],
     explicit_session: str = "",
+    explicit_channel_id: str = "",
     status: str = "success",
 ) -> Optional[NotifyEvent]:
     payload = parse_payload(payload_text)
@@ -403,9 +421,18 @@ def build_message_from_payload(
         loaded_summary = summary_loader(session)
     if not assistant_message and loaded_summary:
         assistant_message = loaded_summary
-    assistant_summary = summarize_assistant_message(
-        assistant_message,
-        max_chars=notify_config.summary_max_chars,
+    provider = _target_provider(
+        runtime_config=runtime_config,
+        notify_config=notify_config,
+        explicit_channel_id=explicit_channel_id,
+    )
+    assistant_summary = (
+        summarize_assistant_message(
+            assistant_message,
+            max_chars=notify_config.summary_max_chars,
+        )
+        if assistant_message and provider == "discord"
+        else assistant_message.strip()
     )
     summary = assistant_summary or _default_summary_for_event(event_name, notify_config)
     normalized_status = _normalize_event_status(event_name, status)

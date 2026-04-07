@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -86,8 +87,39 @@ app.add_typer(config_app, name="config")
 console = Console()
 stderr = Console(stderr=True)
 
+_ASCII_ENCODINGS = {"ascii", "us-ascii", "ansi_x3.4-1968"}
+
+
+def _utf8_stream(stream: object) -> object:
+    encoding = str(getattr(stream, "encoding", "") or "").lower()
+    if encoding and encoding not in _ASCII_ENCODINGS:
+        return stream
+    reconfigure = getattr(stream, "reconfigure", None)
+    if callable(reconfigure):
+        reconfigure(encoding="utf-8", errors="replace")
+        return stream
+    buffer = getattr(stream, "buffer", None)
+    if buffer is None:
+        return stream
+    return io.TextIOWrapper(buffer, encoding="utf-8", errors="replace", line_buffering=True, write_through=True)
+
+
+def _configure_output_streams() -> None:
+    global console, stderr
+    sys.stdout = _utf8_stream(sys.stdout)
+    sys.stderr = _utf8_stream(sys.stderr)
+    console = Console(file=sys.stdout)
+    stderr = Console(file=sys.stderr, stderr=True)
+
+
+_configure_output_streams()
+
 _UNKNOWN_COMMAND = re.compile(r"No such command ['\"]?(?P<command>[^'\".]+)['\"]?\.")
 _OPEN_CONTEXT = {
+    "allow_extra_args": True,
+    "ignore_unknown_options": True,
+}
+_CONFIG_SET_CONTEXT = {
     "allow_extra_args": True,
     "ignore_unknown_options": True,
 }
@@ -382,6 +414,7 @@ def main_callback(
     ctx: typer.Context,
     version: Optional[bool] = typer.Option(None, "--version", "-v", help="Show version and exit."),
 ) -> None:
+    _configure_output_streams()
     ensure_directories()
     if version:
         console.print(f"orche {__version__}")
@@ -436,13 +469,14 @@ def config_get(
         _handle_error(exc)
 
 
-@config_app.command("set")
+@config_app.command("set", context_settings=_CONFIG_SET_CONTEXT)
 def config_set(
+    ctx: typer.Context,
     key: str = typer.Argument(..., help="Config key to update."),
     value: str = typer.Argument(..., help="Value to write."),
 ) -> None:
     try:
-        set_config_value(key, value)
+        set_config_value(key, " ".join([value, *ctx.args]))
         console.print(get_config_value(key))
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)
@@ -716,6 +750,7 @@ def notify_internal_command(
             runtime_config=runtime_config,
             summary_loader=latest_turn_summary,
             explicit_session=resolved_session,
+            explicit_channel_id=resolved_channel_id,
             status=status,
         )
         routes = []
@@ -930,6 +965,7 @@ def clearall() -> None:
 
 def main() -> int:
     try:
+        _configure_output_streams()
         app(standalone_mode=False)
     except typer.Exit as exc:
         return int(exc.exit_code or 0)

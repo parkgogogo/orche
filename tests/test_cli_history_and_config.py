@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import subprocess
@@ -17,6 +18,18 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 def _plain_output(result) -> str:
     return ANSI_ESCAPE_RE.sub("", result.output)
+
+
+def test_utf8_stream_rewraps_ascii_stream():
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="ascii")
+
+    wrapped = cli._utf8_stream(stream)
+
+    assert getattr(wrapped, "encoding", "").lower() == "utf-8"
+    wrapped.write("prefix … suffix\n")
+    wrapped.flush()
+    assert raw.getvalue().decode("utf-8") == "prefix … suffix\n"
 
 
 def test_backend_list_sessions_returns_sorted_metadata(xdg_runtime):
@@ -333,6 +346,48 @@ def test_config_supports_discord_mention_user_id(xdg_runtime):
     assert list_result.exit_code == 0
     assert "discord.mention-user-id" in list_result.stdout
     assert "123456" in list_result.stdout
+
+
+def test_config_supports_claude_command_and_config_path(xdg_runtime):
+    runner = CliRunner()
+
+    set_command = runner.invoke(app, ["config", "set", "claude.command", "/opt/bin/claude-wrapper"])
+    set_config_path = runner.invoke(app, ["config", "set", "claude.config-path", "~/custom/claude.json"])
+    get_command = runner.invoke(app, ["config", "get", "claude.command"])
+    get_config_path = runner.invoke(app, ["config", "get", "claude.config-path"])
+    list_result = runner.invoke(app, ["config", "list"])
+
+    assert set_command.exit_code == 0
+    assert set_config_path.exit_code == 0
+    assert get_command.exit_code == 0
+    assert get_config_path.exit_code == 0
+    assert get_command.stdout.strip() == "/opt/bin/claude-wrapper"
+    assert get_config_path.stdout.strip() == "~/custom/claude.json"
+    assert list_result.exit_code == 0
+    assert "claude.command" in list_result.stdout
+    assert "/opt/bin/claude-wrapper" in list_result.stdout
+    assert "claude.config-path" in list_result.stdout
+    assert "~/custom/claude.json" in list_result.stdout
+
+
+def test_config_set_accepts_multi_token_claude_values(xdg_runtime):
+    runner = CliRunner()
+
+    set_command = runner.invoke(
+        app,
+        ["config", "set", "claude.command", "/opt/tools/happy-coder", "claude", "--happy-starting-mode", "remote"],
+    )
+    set_config_path = runner.invoke(
+        app,
+        ["config", "set", "claude.config-path", "/tmp/Claude", "Config/custom.json"],
+    )
+    get_command = runner.invoke(app, ["config", "get", "claude.command"])
+    get_config_path = runner.invoke(app, ["config", "get", "claude.config-path"])
+
+    assert set_command.exit_code == 0
+    assert set_config_path.exit_code == 0
+    assert get_command.stdout.strip() == "/opt/tools/happy-coder claude --happy-starting-mode remote"
+    assert get_config_path.stdout.strip() == "/tmp/Claude Config/custom.json"
 
 
 def test_config_rejects_discord_channel_id_shortcut(xdg_runtime):

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import subprocess
+
 import backend
 
 
@@ -12,6 +15,41 @@ class FakeClock:
 
     def sleep(self, seconds: float) -> None:
         self.now += max(seconds, 0.1)
+
+
+def test_emit_internal_notify_keeps_full_tail_text_for_tmux_binding(xdg_runtime, monkeypatch):
+    backend.save_meta(
+        "demo-session",
+        {
+            "session": "demo-session",
+            "notify_binding": {
+                "provider": "tmux-bridge",
+                "target": "target-session",
+            },
+        },
+    )
+
+    captured = {}
+
+    def fake_run(cmd, *, input, text, capture_output, check, start_new_session):
+        captured["payload"] = json.loads(input)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(backend.subprocess, "run", fake_run)
+
+    assert (
+        backend.emit_internal_notify(
+            "demo-session",
+            event="completed",
+            summary="done",
+            status="success",
+            tail_text="\n".join(f"line {index}" for index in range(1, 31)),
+        )
+        is True
+    )
+
+    assert captured["payload"]["metadata"]["tail_text"] == "\n".join(f"line {index}" for index in range(1, 31))
+    assert captured["payload"]["metadata"]["tail_lines"] == 30
 
 
 def test_claim_turn_notification_deduplicates_same_event(xdg_runtime):

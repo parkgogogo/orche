@@ -195,6 +195,28 @@ def test_build_message_from_payload_does_not_require_route_target():
     assert message.summary == "done"
 
 
+def test_build_message_from_payload_keeps_full_native_message_for_tmux():
+    message = build_message_from_payload(
+        json.dumps(
+            {
+                "event": "turn-complete",
+                "last_assistant_message": "## Done\n\n```py\nline1\nline2\nline3\nline4\nline5\nline6\n```\n\nTail",
+            }
+        ),
+        notify_config=NotifyConfig(),
+        runtime_config={
+            "notify_binding": {
+                "provider": "tmux-bridge",
+                "target": "target-session",
+            }
+        },
+        summary_loader=lambda session: "",
+    )
+
+    assert message is not None
+    assert message.summary == "## Done\n\n```py\nline1\nline2\nline3\nline4\nline5\nline6\n```\n\nTail"
+
+
 def test_build_message_from_payload_reads_nested_payload_fields():
     message = build_message_from_payload(
         '{"payload":{"event":"turn-complete","summary":"Nested summary","cwd":"/nested","sessionId":"nested-session"}}',

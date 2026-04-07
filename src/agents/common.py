@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import re
 import shlex
 import shutil
@@ -72,9 +73,52 @@ def write_notify_hook(hook_path: Path) -> None:
     hook_path.chmod(0o755)
 
 
-def ensure_orche_shim() -> Path:
-    ensure_directories()
-    shim_path = bridges_dir() / "bin" / "orche"
+def _resolve_executable(path: Path | str | None) -> Path | None:
+    if path in (None, ""):
+        return None
+    candidate = Path(str(path)).expanduser()
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return None
+    if not resolved.exists() or not os.access(resolved, os.X_OK):
+        return None
+    return resolved
+
+
+def _current_orche_executable(*, shim_path: Path) -> Path | None:
+    candidates: list[Path] = []
+    argv = list(getattr(sys, "argv", []) or [])
+    argv0 = str(argv[0]).strip() if argv else ""
+    if argv0:
+        argv0_path = Path(argv0).expanduser()
+        if argv0_path.name.startswith("orche"):
+            candidates.append(argv0_path)
+        argv0_lookup = shutil.which(argv0)
+        if argv0_lookup:
+            candidates.append(Path(argv0_lookup))
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).expanduser())
+        which_orche = shutil.which("orche")
+        if which_orche:
+            candidates.append(Path(which_orche))
+    excluded = _resolve_executable(shim_path)
+    for candidate in candidates:
+        resolved = _resolve_executable(candidate)
+        if resolved is None:
+            continue
+        if excluded is not None and resolved == excluded:
+            continue
+        if resolved.name.startswith("orche"):
+            return resolved
+    return None
+
+
+def orche_bootstrap_command(*, shim_path: Path | None = None) -> list[str]:
+    effective_shim_path = shim_path or (bridges_dir() / "bin" / "orche")
+    executable = _current_orche_executable(shim_path=effective_shim_path)
+    if executable is not None:
+        return [str(executable)]
     source_root = Path(__file__).resolve().parent.parent
     bootstrap = (
         "import sys; "
@@ -83,15 +127,21 @@ def ensure_orche_shim() -> Path:
         'sys.argv = ["orche", *sys.argv[1:]]; '
         "raise SystemExit(cli.main())"
     )
+    python_executable = _resolve_executable(sys.executable)
+    if python_executable is None:
+        raise RuntimeError("Unable to resolve Python executable for orche bootstrap")
+    return [str(python_executable), "-c", bootstrap]
+
+
+def ensure_orche_shim() -> Path:
+    ensure_directories()
+    shim_path = bridges_dir() / "bin" / "orche"
+    shim_command = " ".join(shlex.quote(part) for part in orche_bootstrap_command(shim_path=shim_path))
     shim_body = "\n".join(
         (
             "#!/bin/sh",
             "set -eu",
-            (
-                f"exec {shlex.quote(str(Path(sys.executable).resolve()))} "
-                f"-c {shlex.quote(bootstrap)} "
-                '"$@"'
-            ),
+            f'exec {shim_command} "$@"',
             "",
         )
     )
