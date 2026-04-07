@@ -217,6 +217,23 @@ def test_build_message_from_payload_keeps_full_native_message_for_tmux():
     assert message.summary == "## Done\n\n```py\nline1\nline2\nline3\nline4\nline5\nline6\n```\n\nTail"
 
 
+def test_build_message_from_payload_falls_back_to_notify_config_provider_when_binding_is_incomplete():
+    message = build_message_from_payload(
+        '{"event":"turn-complete","last_assistant_message":"alpha beta gamma delta"}',
+        notify_config=NotifyConfig(provider="discord", summary_max_chars=10),
+        runtime_config={
+            "notify_binding": {
+                "provider": "tmux-bridge",
+                "target": "",
+            }
+        },
+        summary_loader=lambda session: "",
+    )
+
+    assert message is not None
+    assert message.summary == "alpha bet…"
+
+
 def test_build_message_from_payload_reads_nested_payload_fields():
     message = build_message_from_payload(
         '{"payload":{"event":"turn-complete","summary":"Nested summary","cwd":"/nested","sessionId":"nested-session"}}',
