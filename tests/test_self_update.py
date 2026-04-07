@@ -119,7 +119,45 @@ def test_perform_self_update_noops_when_requested_version_is_already_active(xdg_
     assert result.version == "v0.4.35"
 
 
-def test_install_release_archive_supports_legacy_single_binary_layout(tmp_path):
+def test_perform_self_update_repairs_stale_install_metadata(xdg_runtime, tmp_path, monkeypatch):
+    prefix = tmp_path / "bin"
+    install_root = tmp_path / "releases"
+    current_executable = install_root / "v0.4.38" / "darwin-arm64" / "orche"
+    current_executable.parent.mkdir(parents=True)
+    current_executable.write_text("#!/bin/sh\necho current\n", encoding="utf-8")
+    current_executable.chmod(0o755)
+    prefix.mkdir()
+    os.symlink(current_executable, prefix / "orche")
+
+    self_update.save_install_metadata(
+        {
+            "channel": self_update.INSTALL_CHANNEL,
+            "repo": self_update.DEFAULT_RELEASE_REPO,
+            "version": "v0.4.38",
+            "target": "linux-x64",
+            "prefix": str(tmp_path / "old-bin"),
+            "link_path": str(tmp_path / "old-bin" / "orche"),
+            "install_root": str(tmp_path / "old-releases"),
+            "executable_path": str(tmp_path / "old-releases" / "v0.4.38" / "linux-x64" / "orche"),
+        }
+    )
+    monkeypatch.setattr(self_update, "detect_target", lambda: "darwin-arm64")
+    monkeypatch.setattr(self_update.sys, "argv", [str(prefix / "orche")])
+    monkeypatch.setattr(self_update, "resolve_version", lambda repo, requested_version: requested_version or "v0.4.38")
+
+    result = self_update.perform_self_update()
+
+    metadata = self_update.load_install_metadata()
+    assert result.updated is False
+    assert result.version == "v0.4.38"
+    assert metadata is not None
+    assert metadata["target"] == "darwin-arm64"
+    assert metadata["prefix"] == str(prefix.resolve())
+    assert metadata["install_root"] == str(install_root.resolve())
+    assert metadata["executable_path"] == str(current_executable.resolve())
+
+
+def test_install_release_archive_supports_legacy_single_binary_layout(xdg_runtime, tmp_path):
     archive_path = _write_legacy_release_archive(
         tmp_path,
         version="v0.4.36",
