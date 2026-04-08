@@ -158,6 +158,32 @@ def test_build_message_from_payload_accepts_claude_prompt_submit_hook_without_su
     assert calls == []
 
 
+def test_build_message_from_payload_sets_default_summary_for_claude_notification_hook():
+    message = build_message_from_payload(
+        '{"hook_event_name":"Notification","session_id":"claude-session"}',
+        notify_config=NotifyConfig(),
+        runtime_config={},
+        summary_loader=lambda session: "",
+    )
+
+    assert message is not None
+    assert message.event == "notification"
+    assert message.summary == "Claude sent a notification"
+
+
+def test_build_message_from_payload_sets_default_summary_for_claude_permission_request_hook():
+    message = build_message_from_payload(
+        '{"hook_event_name":"PermissionRequest","session_id":"claude-session"}',
+        notify_config=NotifyConfig(),
+        runtime_config={},
+        summary_loader=lambda session: "",
+    )
+
+    assert message is not None
+    assert message.event == "permission-request"
+    assert message.summary == "Claude requested permission"
+
+
 def test_assistant_message_from_transcript_returns_empty_for_missing_path():
     result = payload_module._assistant_message_from_transcript(
         {"transcript_path": "/tmp/orche-missing-transcript.jsonl"},
