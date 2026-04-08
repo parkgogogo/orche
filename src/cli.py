@@ -19,6 +19,7 @@ from rich.table import Table
 from rich.text import Text
 from typer.core import TyperGroup
 
+from tls import configure_tls_runtime
 from backend import (
     BACKEND,
     OrcheError,
@@ -507,6 +508,7 @@ def main_callback(
     version: Optional[bool] = typer.Option(None, "--version", "-v", help="Show version and exit."),
 ) -> None:
     _configure_output_streams()
+    configure_tls_runtime()
     ensure_directories()
     if ctx.invoked_subcommand not in {"notify-internal", "_notify-discord", "watchdog-loop-internal"}:
         expire_managed_sessions()
