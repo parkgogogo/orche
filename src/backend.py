@@ -46,6 +46,7 @@ WATCHDOG_ACTIVE_CPU_THRESHOLD = 5.0
 LATEST_TURN_SUMMARY_RETRY_SECONDS = 5.0
 LATEST_TURN_SUMMARY_RETRY_INTERVAL = 0.25
 WATCHDOG_NOTIFY_BUFFER = 10.0
+TMUX_PANE_OUTPUT_SEPARATOR = "@@ORCHE_PANE@@"
 LAUNCH_ERROR_PREFIX = "orche launch error:"
 CONFIG_COMMENT = (
     "orche runtime config. session is the active orche agent session label; "
@@ -418,14 +419,14 @@ def list_windows(target: Optional[str] = None) -> List[Dict[str, str]]:
             "-t",
             session_name,
             "-F",
-            "#{window_id}\t#{window_name}",
+            _tmux_join_fields("#{window_id}", "#{window_name}"),
             check=False,
             capture=True,
         )
         if result.returncode != 0:
             continue
         for line in result.stdout.splitlines():
-            parts = line.split("\t")
+            parts = _tmux_split_fields(line, expected=2)
             if len(parts) == 2:
                 windows.append({"session_name": session_name, "window_id": parts[0], "window_name": parts[1]})
     return windows
@@ -471,7 +472,17 @@ def list_panes(target: Optional[str] = None) -> List[Dict[str, str]]:
     args.extend(
         [
             "-F",
-            "#{session_name}\t#{pane_id}\t#{window_id}\t#{window_name}\t#{pane_dead}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}",
+            _tmux_join_fields(
+                "#{session_name}",
+                "#{pane_id}",
+                "#{window_id}",
+                "#{window_name}",
+                "#{pane_dead}",
+                "#{pane_pid}",
+                "#{pane_current_command}",
+                "#{pane_current_path}",
+                "#{pane_title}",
+            ),
         ]
     )
     result = tmux(*args, check=False, capture=True)
@@ -479,7 +490,7 @@ def list_panes(target: Optional[str] = None) -> List[Dict[str, str]]:
         return []
     panes: List[Dict[str, str]] = []
     for line in result.stdout.splitlines():
-        parts = line.split("\t")
+        parts = _tmux_split_fields(line, expected=9)
         if len(parts) != 9:
             continue
         if not target and not _is_orche_tmux_session(parts[0]):
@@ -505,9 +516,19 @@ def get_pane_info(pane_id: str) -> Optional[Dict[str, str]]:
         return None
     raw = _tmux_value_for_pane(
         pane_id,
-        "#{session_name}\t#{pane_id}\t#{window_id}\t#{window_name}\t#{pane_dead}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}",
+        _tmux_join_fields(
+            "#{session_name}",
+            "#{pane_id}",
+            "#{window_id}",
+            "#{window_name}",
+            "#{pane_dead}",
+            "#{pane_pid}",
+            "#{pane_current_command}",
+            "#{pane_current_path}",
+            "#{pane_title}",
+        ),
     )
-    parts = raw.split("\t") if raw else []
+    parts = _tmux_split_fields(raw, expected=9)
     if len(parts) != 9:
         return None
     return {
@@ -541,9 +562,9 @@ def _tmux_value_for_pane(pane_id: str, fmt: str) -> str:
 def pane_cursor_state(pane_id: str) -> Dict[str, str]:
     raw = _tmux_value_for_pane(
         pane_id,
-        "#{cursor_x}\t#{cursor_y}\t#{pane_in_mode}\t#{pane_dead}",
+        _tmux_join_fields("#{cursor_x}", "#{cursor_y}", "#{pane_in_mode}", "#{pane_dead}"),
     )
-    parts = raw.split("\t") if raw else []
+    parts = _tmux_split_fields(raw, expected=4)
     while len(parts) < 4:
         parts.append("")
     return {
@@ -1223,7 +1244,7 @@ def ensure_tmux_session(session: str, cwd: Path) -> str:
 
 
 def _pane_record_from_tmux_output(output: str) -> Dict[str, str]:
-    parts = (output or "").strip().split("\t")
+    parts = _tmux_split_fields(output, expected=4)
     if len(parts) != 4:
         raise OrcheError("Failed to parse tmux pane output")
     return {
@@ -1237,6 +1258,23 @@ def _pane_record_from_tmux_output(output: str) -> Dict[str, str]:
         "pane_current_path": "",
         "pane_title": "",
     }
+
+
+def _tmux_join_fields(*parts: str) -> str:
+    return TMUX_PANE_OUTPUT_SEPARATOR.join(parts)
+
+
+def _tmux_split_fields(output: str, *, expected: int) -> List[str]:
+    rendered = str(output or "").strip()
+    if not rendered:
+        return []
+    parts = rendered.split(TMUX_PANE_OUTPUT_SEPARATOR)
+    if len(parts) == expected:
+        return parts
+    parts = rendered.split("\t")
+    if len(parts) == expected:
+        return parts
+    return []
 
 
 def create_dedicated_pane(session: str, cwd: Path) -> Dict[str, str]:
@@ -1257,7 +1295,7 @@ def create_dedicated_pane(session: str, cwd: Path) -> Dict[str, str]:
         str(cwd),
         "-P",
         "-F",
-        "#{session_name}\t#{pane_id}\t#{window_id}\t#{window_name}",
+        _tmux_join_fields("#{session_name}", "#{pane_id}", "#{window_id}", "#{window_name}"),
         check=True,
         capture=True,
     )
@@ -1298,7 +1336,7 @@ def create_inline_pane(
         str(cwd),
         "-P",
         "-F",
-        "#{session_name}\t#{pane_id}\t#{window_id}\t#{window_name}",
+        _tmux_join_fields("#{session_name}", "#{pane_id}", "#{window_id}", "#{window_name}"),
         check=True,
         capture=True,
     )

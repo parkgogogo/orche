@@ -838,7 +838,8 @@ def test_ensure_pane_inline_mode_splits_current_tmux_session(xdg_runtime, tmp_pa
             return subprocess.CompletedProcess(
                 ["tmux", *args],
                 0,
-                "orche-reviewer\t%11\t@3\tmain\n",
+                f"orche-reviewer{backend.TMUX_PANE_OUTPUT_SEPARATOR}%11{backend.TMUX_PANE_OUTPUT_SEPARATOR}"
+                f"@3{backend.TMUX_PANE_OUTPUT_SEPARATOR}main\n",
                 "",
             )
         return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
@@ -885,7 +886,9 @@ def test_ensure_pane_dedicated_mode_uses_new_session_output_for_new_sessions(xdg
             return subprocess.CompletedProcess(
                 ["tmux", *args],
                 0,
-                f"{expected_tmux_session}\t%12\t@4\torche-demo-dedicated-worker\n",
+                f"{expected_tmux_session}{backend.TMUX_PANE_OUTPUT_SEPARATOR}%12"
+                f"{backend.TMUX_PANE_OUTPUT_SEPARATOR}@4{backend.TMUX_PANE_OUTPUT_SEPARATOR}"
+                "orche-demo-dedicated-worker\n",
                 "",
             )
         return subprocess.CompletedProcess(["tmux", *args], 0, "", "")

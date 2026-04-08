@@ -305,6 +305,106 @@ def test_ensure_tmux_session_creates_dedicated_session(xdg_runtime, monkeypatch,
     assert ("new-session", "-d", "-s", expected_tmux_session, "-n", "orche-demo-worker", "-c", str(tmp_path)) in calls
 
 
+def test_list_panes_parses_tmux_separator_output(xdg_runtime, monkeypatch):
+    separator = backend.TMUX_PANE_OUTPUT_SEPARATOR
+
+    def fake_tmux(*args, **kwargs):
+        if args[:1] == ("list-panes",):
+            return subprocess.CompletedProcess(
+                ["tmux", *args],
+                0,
+                (
+                    "orche-demo"
+                    f"{separator}%7"
+                    f"{separator}@1"
+                    f"{separator}main"
+                    f"{separator}0"
+                    f"{separator}123"
+                    f"{separator}codex"
+                    f"{separator}/tmp/repo"
+                    f"{separator}demo\n"
+                ),
+                "",
+            )
+        return subprocess.CompletedProcess(["tmux", *args], 1, "", "")
+
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+
+    panes = backend.list_panes("orche-demo")
+
+    assert panes == [
+        {
+            "session_name": "orche-demo",
+            "pane_id": "%7",
+            "window_id": "@1",
+            "window_name": "main",
+            "pane_dead": "0",
+            "pane_pid": "123",
+            "pane_current_command": "codex",
+            "pane_current_path": "/tmp/repo",
+            "pane_title": "demo",
+        }
+    ]
+
+
+def test_get_pane_info_parses_tmux_separator_output(xdg_runtime, monkeypatch):
+    separator = backend.TMUX_PANE_OUTPUT_SEPARATOR
+
+    monkeypatch.setattr(backend, "pane_exists", lambda pane_id: pane_id == "%7")
+
+    def fake_tmux(*args, **kwargs):
+        if list(args) == [
+            "display-message",
+            "-p",
+            "-t",
+            "%7",
+            backend._tmux_join_fields(
+                "#{session_name}",
+                "#{pane_id}",
+                "#{window_id}",
+                "#{window_name}",
+                "#{pane_dead}",
+                "#{pane_pid}",
+                "#{pane_current_command}",
+                "#{pane_current_path}",
+                "#{pane_title}",
+            ),
+        ]:
+            return subprocess.CompletedProcess(
+                ["tmux", *args],
+                0,
+                (
+                    "orche-demo"
+                    f"{separator}%7"
+                    f"{separator}@1"
+                    f"{separator}main"
+                    f"{separator}0"
+                    f"{separator}123"
+                    f"{separator}codex"
+                    f"{separator}/tmp/repo"
+                    f"{separator}demo\n"
+                ),
+                "",
+            )
+        return subprocess.CompletedProcess(["tmux", *args], 1, "", "")
+
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+
+    info = backend.get_pane_info("%7")
+
+    assert info == {
+        "session_name": "orche-demo",
+        "pane_id": "%7",
+        "window_id": "@1",
+        "window_name": "main",
+        "pane_dead": "0",
+        "pane_pid": "123",
+        "pane_current_command": "codex",
+        "pane_current_path": "/tmp/repo",
+        "pane_title": "demo",
+    }
+
+
 def test_current_session_id_prefers_tmux_session_mapping(xdg_runtime, monkeypatch):
     monkeypatch.delenv("ORCHE_SESSION", raising=False)
 
