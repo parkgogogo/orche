@@ -312,14 +312,16 @@ orche config list
 orche config get claude.command
 orche config get claude.home-path
 orche config set claude.command /opt/tools/claude-wrapper
+orche config reset claude.command
 orche config set claude.home-path ~/custom/.claude
 orche config set claude.config-path ~/custom/claude.json
 orche config set discord.bot-token "$BOT_TOKEN"
 orche config set discord.mention-user-id 123456789012345678
+orche config set managed.ttl-seconds 1800
 orche config set notify.enabled true
 ```
 
-`orche config get/set/list` 读写的是同一个 JSON 配置文件。你既可以通过 CLI 修改，也可以直接编辑这个文件。
+`orche config get/set/reset/list` 读写的是同一个 JSON 配置文件。你既可以通过 CLI 修改，也可以直接编辑这个文件。
 
 配置文件：
 
@@ -359,6 +361,8 @@ $XDG_DATA_HOME/orche/
   设置通知里要 mention 的 Discord user id。
 - `discord.webhook-url`
   设置 webhook 模式下的 Discord webhook URL。
+- `managed.ttl-seconds`
+  设置 managed session 的空闲 TTL 秒数，默认值是 `3600`；`<= 0` 表示禁用 TTL 过期回收。
 - `notify.enabled`
   全局启用或禁用 notify 投递。
 
@@ -388,6 +392,12 @@ orche config set claude.home-path ~/custom/.claude
 
 ```bash
 orche config set claude.config-path ~/custom/claude.json
+```
+
+把其中一个键恢复到默认值：
+
+```bash
+orche config reset claude.command
 ```
 
 这两个键分别控制：
