@@ -438,14 +438,20 @@ def _open_session(
     return session, pane_id
 
 
-def _open_shortcut_session(ctx: typer.Context, agent: str) -> tuple[str, str]:
-    resolved_cwd = _resolve_path(_default_cwd(), must_exist=True, require_dir=True)
+def _open_shortcut_session(
+    ctx: typer.Context,
+    agent: str,
+    *,
+    cwd: Optional[Path] = None,
+    name: Optional[str] = None,
+) -> tuple[str, str]:
+    resolved_cwd = _resolve_path(cwd or _default_cwd(), must_exist=True, require_dir=True)
     if resolved_cwd is None:
         raise OrcheError("Failed to resolve cwd")
     return _open_session(
         cwd=resolved_cwd,
         agent=agent,
-        name=_shortcut_session_name(resolved_cwd, agent),
+        name=name or _shortcut_session_name(resolved_cwd, agent),
         notify=None,
         cli_args=list(ctx.args),
     )
@@ -580,9 +586,20 @@ def attach(
 
 
 @app.command("codex", context_settings=_OPEN_CONTEXT)
-def codex_shortcut(ctx: typer.Context) -> None:
+def codex_shortcut(
+    ctx: typer.Context,
+    cwd: Optional[Path] = typer.Option(
+        None,
+        callback=_resolve_cwd,
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=False,
+        help="Working directory for the session. Defaults to the current directory.",
+    ),
+    name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-codex-<random>."),
+) -> None:
     try:
-        session, pane_id = _open_shortcut_session(ctx, "codex")
+        session, pane_id = _open_shortcut_session(ctx, "codex", cwd=cwd, name=name)
         attach_session(session, pane_id=pane_id)
         _record_session_action(session, "attach")
     except (OrcheError, subprocess.CalledProcessError) as exc:
@@ -590,9 +607,20 @@ def codex_shortcut(ctx: typer.Context) -> None:
 
 
 @app.command("claude", context_settings=_OPEN_CONTEXT)
-def claude_shortcut(ctx: typer.Context) -> None:
+def claude_shortcut(
+    ctx: typer.Context,
+    cwd: Optional[Path] = typer.Option(
+        None,
+        callback=_resolve_cwd,
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=False,
+        help="Working directory for the session. Defaults to the current directory.",
+    ),
+    name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-claude-<random>."),
+) -> None:
     try:
-        session, pane_id = _open_shortcut_session(ctx, "claude")
+        session, pane_id = _open_shortcut_session(ctx, "claude", cwd=cwd, name=name)
         attach_session(session, pane_id=pane_id)
         _record_session_action(session, "attach")
     except (OrcheError, subprocess.CalledProcessError) as exc:

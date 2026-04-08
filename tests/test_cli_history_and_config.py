@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 from pathlib import Path
 
 import subprocess
@@ -30,6 +31,26 @@ def test_utf8_stream_rewraps_ascii_stream():
     wrapped.write("prefix … suffix\n")
     wrapped.flush()
     assert raw.getvalue().decode("utf-8") == "prefix … suffix\n"
+
+
+def test_backend_run_decodes_utf8_output_under_ascii_locale():
+    result = backend.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.buffer.write('pane ╭•\\n'.encode('utf-8'))",
+        ],
+        capture=True,
+        env={
+            **os.environ,
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PYTHONUTF8": "0",
+            "PYTHONIOENCODING": "utf-8",
+        },
+    )
+
+    assert result.stdout == "pane ╭•\n"
 
 
 def test_backend_list_sessions_returns_sorted_metadata(xdg_runtime):
@@ -755,6 +776,44 @@ def test_codex_shortcut_opens_native_session_and_attaches(xdg_runtime, monkeypat
     }
     assert captured["attach"] == {"session": "project-codex-abc123", "pane_id": "%9"}
     assert captured["recorded"] == {"session": "project-codex-abc123", "action": "attach"}
+
+
+def test_codex_shortcut_supports_orche_cwd_and_name_without_forwarding_them(xdg_runtime, monkeypatch):
+    runner = CliRunner()
+    project_dir = xdg_runtime["home"] / "project"
+    project_dir.mkdir()
+    captured: dict[str, object] = {}
+
+    monkeypatch.chdir(xdg_runtime["home"])
+
+    def fake_ensure_native_session(session, cwd, agent, **kwargs):
+        captured["open"] = {
+            "session": session,
+            "cwd": cwd,
+            "agent": agent,
+            "cli_args": kwargs.get("cli_args"),
+        }
+        return "%9"
+
+    monkeypatch.setattr(cli, "ensure_native_session", fake_ensure_native_session)
+    monkeypatch.setattr(cli, "attach_session", lambda session, **kwargs: captured.update({"attach": {"session": session, **kwargs}}) or "@1")
+    monkeypatch.setattr(cli, "append_action_history", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "_record_session_action", lambda session, action, **kwargs: captured.update({"recorded": {"session": session, "action": action}}))
+
+    result = runner.invoke(
+        app,
+        ["codex", "--cwd", str(project_dir), "--name", "demo-shortcut", "--model", "gpt-5.4"],
+    )
+
+    assert result.exit_code == 0
+    assert captured["open"] == {
+        "session": "demo-shortcut",
+        "cwd": project_dir.resolve(),
+        "agent": "codex",
+        "cli_args": ["--model", "gpt-5.4"],
+    }
+    assert captured["attach"] == {"session": "demo-shortcut", "pane_id": "%9"}
+    assert captured["recorded"] == {"session": "demo-shortcut", "action": "attach"}
 
 
 def test_claude_shortcut_generates_unique_sessions_and_forwards_raw_args(xdg_runtime, monkeypatch):

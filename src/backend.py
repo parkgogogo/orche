@@ -241,6 +241,8 @@ def run(
     return subprocess.run(
         cmd,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         input=input_text,
         check=check,
         capture_output=capture,
