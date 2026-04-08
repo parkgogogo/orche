@@ -54,6 +54,7 @@ from backend import (
     run_session_watchdog,
     send_prompt,
     session_exists,
+    reset_config_value,
     set_config_value,
     supported_agent_names,
 )
@@ -573,6 +574,17 @@ def config_set(
 ) -> None:
     try:
         set_config_value(key, " ".join([value, *ctx.args]))
+        console.print(get_config_value(key))
+    except (OrcheError, subprocess.CalledProcessError) as exc:
+        _handle_error(exc)
+
+
+@config_app.command("reset")
+def config_reset(
+    key: str = typer.Argument(..., help="Config key to restore to its default value."),
+) -> None:
+    try:
+        reset_config_value(key)
         console.print(get_config_value(key))
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)

@@ -336,14 +336,16 @@ orche config list
 orche config get claude.command
 orche config get claude.home-path
 orche config set claude.command /opt/tools/claude-wrapper
+orche config reset claude.command
 orche config set claude.home-path ~/custom/.claude
 orche config set claude.config-path ~/custom/claude.json
 orche config set discord.bot-token "$BOT_TOKEN"
 orche config set discord.mention-user-id 123456789012345678
+orche config set managed.ttl-seconds 1800
 orche config set notify.enabled true
 ```
 
-`orche config get/set/list` reads and writes the same JSON config file. You can update values through the CLI or edit the file directly.
+`orche config get/set/reset/list` reads and writes the same JSON config file. You can update values through the CLI or edit the file directly.
 
 Config file:
 
@@ -383,6 +385,8 @@ Supported user config keys:
   Set the Discord user id to mention in delivered notifications.
 - `discord.webhook-url`
   Set the Discord webhook URL used for webhook delivery.
+- `managed.ttl-seconds`
+  Set the managed-session idle TTL in seconds. Default is `3600`; `<= 0` disables TTL expiry.
 - `notify.enabled`
   Enable or disable notify delivery globally.
 
@@ -412,6 +416,12 @@ Set a custom Claude source config path for trust sync:
 
 ```bash
 orche config set claude.config-path ~/custom/claude.json
+```
+
+Reset one of these keys back to its default:
+
+```bash
+orche config reset claude.command
 ```
 
 What each key changes:

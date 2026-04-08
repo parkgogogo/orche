@@ -1013,9 +1013,8 @@ def _current_tmux_value(fmt: str) -> str:
     return result.stdout.strip()
 
 
-def load_config() -> Dict[str, Any]:
-    ensure_directories()
-    default = {
+def default_config_values() -> Dict[str, Any]:
+    return {
         "_comment": CONFIG_COMMENT,
         "claude_command": "",
         "claude_home_path": "",
@@ -1035,17 +1034,23 @@ def load_config() -> Dict[str, Any]:
         "codex_home_managed": False,
         "tmux_session": "",
     }
+
+
+def load_raw_config() -> Dict[str, Any]:
+    ensure_directories()
     path = config_path()
     if not path.exists():
-        return default
+        return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
-        return default
-    if not isinstance(data, dict):
-        return default
-    merged = dict(default)
-    merged.update(data)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_config() -> Dict[str, Any]:
+    merged = default_config_values()
+    merged.update(load_raw_config())
     return merged
 
 
@@ -1067,17 +1072,32 @@ def config_key_field(key: str) -> str:
     return field
 
 
+def default_config_value(key: str) -> Any:
+    config_key_field(key)
+    defaults = {
+        "claude.command": DEFAULT_CLAUDE_COMMAND,
+        "claude.home-path": "~/.claude",
+        "claude.config-path": "~/.claude.json",
+        "discord.bot-token": "",
+        "discord.mention-user-id": "",
+        "discord.webhook-url": "",
+        "managed.ttl-seconds": DEFAULT_MANAGED_SESSION_TTL_SECONDS,
+        "notify.enabled": True,
+    }
+    return defaults[key]
+
+
 def get_config_value(key: str) -> str:
-    config = load_config()
     field = config_key_field(key)
-    value = config.get(field)
+    raw_config = load_raw_config()
+    value = raw_config[field] if field in raw_config else default_config_value(key)
     if key == "notify.enabled":
         return "true" if bool(value) else "false"
     return "" if value is None else str(value)
 
 
 def set_config_value(key: str, value: str) -> Dict[str, Any]:
-    config = load_config()
+    config = load_raw_config()
     field = config_key_field(key)
     normalized = value
     if key == "notify.enabled":
@@ -1096,6 +1116,17 @@ def set_config_value(key: str, value: str) -> Dict[str, Any]:
     else:
         normalized = value.strip()
     config[field] = normalized
+    config["_comment"] = CONFIG_COMMENT
+    save_config(config)
+    return config
+
+
+def reset_config_value(key: str) -> Dict[str, Any]:
+    config = load_raw_config()
+    field = config_key_field(key)
+    config.pop(field, None)
+    if config:
+        config["_comment"] = CONFIG_COMMENT
     save_config(config)
     return config
 

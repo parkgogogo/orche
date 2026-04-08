@@ -630,6 +630,27 @@ def test_config_supports_claude_command_home_and_config_paths(xdg_runtime):
     assert "~/custom/claude.json" in list_result.stdout
 
 
+def test_config_get_reports_effective_defaults_for_unset_keys(xdg_runtime):
+    runner = CliRunner()
+
+    command = runner.invoke(app, ["config", "get", "claude.command"])
+    home_path = runner.invoke(app, ["config", "get", "claude.home-path"])
+    config_path_result = runner.invoke(app, ["config", "get", "claude.config-path"])
+    notify_enabled = runner.invoke(app, ["config", "get", "notify.enabled"])
+    managed_ttl = runner.invoke(app, ["config", "get", "managed.ttl-seconds"])
+
+    assert command.exit_code == 0
+    assert command.stdout.strip() == "claude"
+    assert home_path.exit_code == 0
+    assert home_path.stdout.strip() == "~/.claude"
+    assert config_path_result.exit_code == 0
+    assert config_path_result.stdout.strip() == "~/.claude.json"
+    assert notify_enabled.exit_code == 0
+    assert notify_enabled.stdout.strip() == "true"
+    assert managed_ttl.exit_code == 0
+    assert managed_ttl.stdout.strip() == str(backend.DEFAULT_MANAGED_SESSION_TTL_SECONDS)
+
+
 def test_config_set_accepts_multi_token_claude_values(xdg_runtime):
     runner = CliRunner()
 
@@ -655,6 +676,70 @@ def test_config_set_accepts_multi_token_claude_values(xdg_runtime):
     assert get_command.stdout.strip() == "/opt/tools/happy-coder claude --happy-starting-mode remote"
     assert get_home_path.stdout.strip() == "/tmp/Claude Home/runtime"
     assert get_config_path.stdout.strip() == "/tmp/Claude Config/custom.json"
+
+
+def test_config_reset_restores_default_and_removes_override(xdg_runtime):
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["config", "set", "claude.command", "/opt/tools/claude-wrapper"]).exit_code == 0
+
+    reset_result = runner.invoke(app, ["config", "reset", "claude.command"])
+    get_result = runner.invoke(app, ["config", "get", "claude.command"])
+    list_result = runner.invoke(app, ["config", "list"])
+    payload = backend.load_raw_config()
+
+    assert reset_result.exit_code == 0
+    assert reset_result.stdout.strip() == "claude"
+    assert get_result.exit_code == 0
+    assert get_result.stdout.strip() == "claude"
+    assert list_result.exit_code == 0
+    assert "claude.command" in list_result.stdout
+    assert "claude" in list_result.stdout
+    assert "claude_command" not in payload
+
+
+def test_config_reset_preserves_internal_runtime_fields(xdg_runtime):
+    backend.save_config(
+        {
+            "_comment": "runtime",
+            "claude_command": "/opt/tools/claude-wrapper",
+            "session": "demo-session",
+            "runtime_home": "/tmp/runtime-home",
+            "tmux_session": "orche-demo-session",
+        }
+    )
+
+    result = CliRunner().invoke(app, ["config", "reset", "claude.command"])
+    payload = backend.load_raw_config()
+
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "claude"
+    assert "claude_command" not in payload
+    assert payload["session"] == "demo-session"
+    assert payload["runtime_home"] == "/tmp/runtime-home"
+    assert payload["tmux_session"] == "orche-demo-session"
+
+
+def test_config_reset_supports_non_string_defaults(xdg_runtime):
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["config", "set", "notify.enabled", "false"]).exit_code == 0
+    assert runner.invoke(app, ["config", "set", "managed.ttl-seconds", "1800"]).exit_code == 0
+
+    notify_result = runner.invoke(app, ["config", "reset", "notify.enabled"])
+    ttl_result = runner.invoke(app, ["config", "reset", "managed.ttl-seconds"])
+
+    assert notify_result.exit_code == 0
+    assert notify_result.stdout.strip() == "true"
+    assert ttl_result.exit_code == 0
+    assert ttl_result.stdout.strip() == str(backend.DEFAULT_MANAGED_SESSION_TTL_SECONDS)
+
+
+def test_config_reset_rejects_unsupported_key(xdg_runtime):
+    result = CliRunner().invoke(app, ["config", "reset", "discord.channel-id"])
+
+    assert result.exit_code == 1
+    assert "Unsupported config key: discord.channel-id" in result.output
 
 
 def test_config_rejects_discord_channel_id_shortcut(xdg_runtime):
