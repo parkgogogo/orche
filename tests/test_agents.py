@@ -240,6 +240,34 @@ def test_ensure_managed_codex_home_preserves_existing_hooks_json(xdg_runtime, tm
     assert hooks_payload["hooks"]["Stop"][0]["hooks"][0]["command"] == "/bin/echo existing-stop-hook"
 
 
+def test_ensure_managed_codex_home_preserves_state_files_needed_for_login(xdg_runtime, tmp_path, monkeypatch):
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", tmp_path / ".codex")
+    monkeypatch.setattr(backend.codex_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend.codex_agent_module, "DEFAULT_CODEX_SOURCE_HOME", tmp_path / ".codex")
+
+    source_home = tmp_path / ".codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text('model = "gpt-5"\n', encoding="utf-8")
+    (source_home / "state_5.sqlite").write_text("state", encoding="utf-8")
+    (source_home / "state_5.sqlite-wal").write_text("state-wal", encoding="utf-8")
+    (source_home / "logs_1.sqlite").write_text("logs", encoding="utf-8")
+    (source_home / "history.jsonl").write_text("history\n", encoding="utf-8")
+
+    target = Path(
+        backend.ensure_managed_codex_home(
+            "repo-codex-main",
+            cwd=tmp_path,
+            discord_channel_id=None,
+        )
+    )
+
+    assert (target / "state_5.sqlite").read_text(encoding="utf-8") == "state"
+    assert (target / "state_5.sqlite-wal").read_text(encoding="utf-8") == "state-wal"
+    assert not (target / "logs_1.sqlite").exists()
+    assert not (target / "history.jsonl").exists()
+
+
 def test_ensure_managed_claude_home_preserves_existing_source_config(xdg_runtime, tmp_path, monkeypatch):
     monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
     monkeypatch.setattr(backend.claude_agent_module, "source_claude_config_path", lambda: tmp_path / ".claude.json")

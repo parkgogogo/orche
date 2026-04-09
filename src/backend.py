@@ -1340,8 +1340,9 @@ def deliver_notify_to_session(session: str, prompt: str) -> str:
         pane_id = bridge_resolve(target_session)
         if not pane_id:
             raise OrcheError(f"notify target session not found: {target_session}")
-        bridge_type(target_session, prompt)
-        bridge_keys(target_session, ["Enter"])
+        target_meta = load_meta(target_session)
+        target_agent = str(target_meta.get("agent") or "").strip().lower() or "codex"
+        get_agent(target_agent).submit_prompt(target_session, prompt, bridge=BRIDGE)
         return pane_id
 
 
