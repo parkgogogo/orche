@@ -1,9 +1,5 @@
 [中文](README.zh.md) · [Install Guide](install.md) · [Docs](./docs)
 
-<p align="center">
-  <img src="./assets/b9f91b78-1852-453a-8b0d-2cae29185174.png" alt="tmux-orche" width="100%">
-</p>
-
 <h1 align="center">tmux-orche</h1>
 
 <p align="center">
@@ -17,9 +13,17 @@
   Hire agents. Route their results. Take over when you need to.
 </p>
 
+<p align="center">
+  <img src="./assets/b9f91b78-1852-453a-8b0d-2cae29185174.png" alt="tmux-orche" width="80%">
+</p>
+
 ## What is tmux-orche?
 
-`tmux-orche` (or `orche` for short) is a control plane that turns your tmux sessions into durable, named agent workers. It lets one agent open, supervise, and receive results from another—without losing terminal state or the ability for a human to jump in at any time.
+When an agent delegates work to another agent, the hard part isn't starting the task—it's **managing the loop**.
+
+Before `orche`, you have to **keep polling** to see if the worker is done, burning tokens on every status check. **Long tasks** are especially painful: the worker might run for ten minutes, and you're stuck either waiting idly or building fragile retry logic. If the worker **hangs or stalls**, you only find out after wasting dozens of polling rounds. And when you finally want to **jump in and fix something**, you have no idea which terminal the agent is actually running in.
+
+**tmux-orche** solves this by turning your tmux sessions into durable, named agent workers. Instead of polling, you open a named session, send the task, and walk away. The worker keeps running inside tmux with full terminal state. When it's done, the result routes back automatically. If something gets stuck, you—or another agent—can attach to the exact live terminal and take over.
 
 Whether you are running Codex, Claude, or any OpenClaw-compatible agent, `orche` gives you:
 
@@ -60,16 +64,22 @@ uv tool install tmux-orche
 
 ## Commands
 
-`orche` follows a simple control-loop design:
+`orche` exposes a small set of CLI commands that agents call directly to manage the orchestration loop:
 
-- `orche open` — Create or reuse a named control endpoint
-- `orche prompt` — Delegate work into a session
-- `orche status` — Check if the pane and agent are alive
-- `orche read` — Inspect recent output without stealing the TTY
-- `orche attach` — Take over the live terminal
-- `orche close` — End the session and clean up
+- **`orche open`** — Create or reuse a named control endpoint. An agent calls this to spin up a durable worker with a fixed working directory and an explicit notify route.
+- **`orche prompt`** — Delegate work into an existing session. This is how a supervisor agent sends a task to a worker without blocking.
+- **`orche status`** — Check whether the pane and agent are alive, and whether a turn is pending. Useful for agents to decide whether to wait or take action.
+- **`orche read`** — Inspect recent terminal output without stealing the TTY. Agents use this to catch up on what a worker has produced so far.
+- **`orche attach`** — Take over the live terminal. When an agent gets stuck, a human (or another agent) can drop straight into the exact tmux pane.
+- **`orche close`** — End the session and clean up state. Called when the worker is no longer needed.
 
-See the [full command reference](./docs/commands.md) for details.
+There are also a few helper commands for advanced control:
+
+- **`orche input`** — Type text into a session without pressing Enter.
+- **`orche key`** — Send special keys such as `Enter`, `Escape`, or `C-c`.
+- **`orche list`** — List locally known sessions.
+- **`orche cancel`** — Interrupt the current turn but keep the session alive.
+- **`orche config`** — Read or update shared runtime config.
 
 ## Usage Scenarios
 
@@ -118,34 +128,65 @@ OpenClaw opens the worker, the worker runs in tmux with durable state, and compl
 
 ### 3. Extending with Skills
 
-`orche` supports skills to extend agent capabilities. A skill is essentially a set of instructions or tools placed in the agent's skills directory.
+`orche` supports skills to extend agent capabilities. A skill is a set of instructions placed in the agent's skills directory.
 
-To install a skill, copy the skill folder to the corresponding agent skills directory:
-- **Codex**: `~/.codex/skills/<skill-name>/`
-- **Claude**: `~/.claude/skills/<skill-name>/`
-- **OpenClaw**: `~/.openclaw/skills/<skill-name>/`
+For example, to install the `orche` skill from this repository for Codex:
 
-See the [skills guide](./docs/skills.md) for more details.
+```bash
+mkdir -p ~/.codex/skills/orche
+curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/codex-claude/SKILL.md \
+  -o ~/.codex/skills/orche/SKILL.md
+```
+
+For Claude:
+
+```bash
+mkdir -p ~/.claude/skills/orche
+curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/codex-claude/SKILL.md \
+  -o ~/.claude/skills/orche/SKILL.md
+```
+
+For OpenClaw:
+
+```bash
+mkdir -p ~/.openclaw/skills/orche
+curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/openclaw/SKILL.md \
+  -o ~/.openclaw/skills/orche/SKILL.md
+```
 
 ## Configuration
 
 `orche` stores user configuration in `~/.config/orche/config.json` (or `$XDG_CONFIG_HOME/orche/config.json`).
 
-Common settings:
+Common settings you may want to adjust:
 
 ```bash
 # Override the Claude CLI command
 orche config set claude.command /opt/tools/claude-wrapper
 
+# Override Claude source paths mirrored into managed runtimes
+orche config set claude.home-path ~/custom/.claude
+orche config set claude.config-path ~/custom/claude.json
+
 # Set Discord notify credentials
 orche config set discord.bot-token "$BOT_TOKEN"
 orche config set discord.mention-user-id 123456789012345678
+orche config set discord.webhook-url "$WEBHOOK_URL"
 
-# Adjust managed session TTL
+# Adjust managed session idle TTL (default 3600s, <=0 disables expiry)
 orche config set managed.ttl-seconds 1800
+
+# Enable or disable notify delivery globally
+orche config set notify.enabled true
 ```
 
-See the [full configuration guide](./docs/config.md) for all available keys.
+You can also view and reset values:
+
+```bash
+orche config list
+orche config get claude.command
+orche config reset claude.command
+```
 
 ## Roadmap
 
