@@ -2,7 +2,7 @@
   <img src="./assets/b9f91b78-1852-453a-8b0d-2cae29185174.png" alt="tmux-orche" width="100%">
 </p>
 
-<h1 align="center">tmux-orche</h1>
+<h1 align="center">tmux-orche 🎼</h1>
 
 <p align="center">
   <a href="https://github.com/parkgogogo/tmux-orche/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
@@ -39,7 +39,7 @@ Whether you are running Codex, Claude, or any OpenClaw-compatible agent, `orche`
 ### Dependencies
 
 - [tmux](https://github.com/tmux/tmux)
-- Python 3.9+
+- Python 3.9+ for `pip`, `uv`, or source installs
 - `codex` CLI and/or `claude` CLI (depending on which agents you use)
 
 ### Quick Install
@@ -62,7 +62,13 @@ Or install with `uv`:
 uv tool install tmux-orche
 ```
 
-[Full install guide →](install.md)
+If `install.sh` or `uv` is not a fit, check `install.md` for `pip`, source checkout, and troubleshooting paths.
+
+Verify the install:
+
+```bash
+orche --help
+```
 
 ### For Agents
 

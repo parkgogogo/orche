@@ -2,7 +2,7 @@
   <img src="./assets/b9f91b78-1852-453a-8b0d-2cae29185174.png" alt="tmux-orche" width="100%">
 </p>
 
-<h1 align="center">tmux-orche</h1>
+<h1 align="center">tmux-orche 🎼</h1>
 
 <p align="center">
   <a href="https://github.com/parkgogogo/tmux-orche/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
@@ -39,7 +39,7 @@
 ### 依赖
 
 - [tmux](https://github.com/tmux/tmux)
-- Python 3.9+
+- Python 3.9+，仅在使用 `pip`、`uv` 或源码安装时需要
 - `codex` CLI 和/或 `claude` CLI（取决于你用哪些 agent）
 
 ### 快速安装
@@ -62,7 +62,13 @@ orche update
 uv tool install tmux-orche
 ```
 
-[完整安装指南 →](install.md)
+如果 `install.sh` 或 `uv` 不适合你的环境，可以查看 `install.md` 中的 `pip`、源码安装和故障排查路径。
+
+安装后先验证：
+
+```bash
+orche --help
+```
 
 ### 给 Agent
 
