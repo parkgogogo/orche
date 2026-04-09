@@ -1897,6 +1897,10 @@ def wait_for_managed_startup_ready(
             blocked_reason = str(startup.get("blocked_reason") or "").strip()
             detail = blocked_reason or f"{plugin.display_name} startup blocked before reaching ready state in {pane_id}"
             raise AgentStartupBlockedError(detail)
+        if startup_state == "timeout":
+            blocked_reason = str(startup.get("blocked_reason") or "").strip()
+            detail = blocked_reason or f"{plugin.display_name} startup timed out before reaching ready state in {pane_id}"
+            raise AgentStartupBlockedError(detail)
         capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES)
         if any(prompt in capture for prompt in plugin.login_prompts):
             raise OrcheError(f"{plugin.display_name} is not logged in inside the tmux pane")
@@ -1914,6 +1918,34 @@ def wait_for_managed_startup_ready(
     reason = f"Timed out waiting for {plugin.display_name} SessionStart(startup) hook in {pane_id}"
     mark_session_startup_timeout(session, reason=reason)
     raise OrcheError(reason)
+
+
+def _managed_startup_reuse_wait_policy(
+    session: str,
+    plugin: AgentPlugin,
+    pane_id: str,
+    startup: Mapping[str, Any],
+) -> bool:
+    startup_state = str(startup.get("state") or "").strip().lower()
+    if not startup_state:
+        mark_session_startup_ready(session, source="existing-running-process")
+        return False
+    if startup_state == "ready":
+        return False
+    if startup_state == "launching":
+        return True
+    if startup_state in {"blocked", "timeout"}:
+        detail = str(startup.get("blocked_reason") or "").strip()
+        if not detail:
+            if startup_state == "timeout":
+                detail = f"{plugin.display_name} startup timed out before reaching ready state in {pane_id}"
+            else:
+                detail = f"{plugin.display_name} startup blocked before reaching ready state in {pane_id}"
+        raise OrcheError(
+            f"Session {session} is not ready because {detail}. "
+            "Reopen or restart the session before sending prompts."
+        )
+    return False
 
 
 def wait_for_claude_startup_ready(
@@ -3166,8 +3198,15 @@ def ensure_session(
     else:
         meta.pop("notify_binding", None)
     save_meta(session, meta)
+    wait_for_startup = False
     if plugin.name in {"claude", "codex"} and runtime.managed:
-        initialize_session_startup(session)
+        current_meta = load_meta(session)
+        startup = current_meta.get("startup") if isinstance(current_meta.get("startup"), dict) else {}
+        if is_agent_running(plugin, pane_id):
+            wait_for_startup = _managed_startup_reuse_wait_policy(session, plugin, pane_id, startup)
+        else:
+            initialize_session_startup(session)
+            wait_for_startup = True
     pane_id = ensure_agent_running(
         plugin,
         session,
@@ -3207,7 +3246,7 @@ def ensure_session(
         meta.pop("notify_binding", None)
     save_meta(session, meta)
     touch_session_event(session, source="open")
-    if runtime.managed and plugin.name in {"claude", "codex"}:
+    if wait_for_startup:
         wait_for_managed_startup_ready(session, plugin, pane_id, cwd)
     elif plugin.name == "claude":
         wait_for_agent_ready(plugin, pane_id, cwd)

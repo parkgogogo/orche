@@ -421,6 +421,56 @@ def test_ensure_session_waits_for_managed_codex_startup_hook(xdg_runtime, tmp_pa
     assert backend.load_meta("demo-codex")["startup"]["state"] == "launching"
 
 
+def test_ensure_session_rejects_reusing_managed_codex_session_after_startup_timeout(xdg_runtime, tmp_path, monkeypatch):
+    session = "demo-codex-timeout"
+    backend.save_meta(
+        session,
+        {
+            "session": session,
+            "agent": "codex",
+            "launch_mode": "managed",
+            "runtime_home": str(tmp_path / "managed" / session),
+            "runtime_home_managed": True,
+            "startup": {
+                "state": "timeout",
+                "blocked_reason": "Timed out waiting for Codex SessionStart(startup) hook in %9",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        backend,
+        "prepare_managed_runtime",
+        lambda plugin, session, cwd, discord_channel_id: backend.AgentRuntime(
+            home=str(tmp_path / "managed" / session),
+            managed=True,
+            label=plugin.runtime_label,
+        ),
+    )
+    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent, **kwargs: "%9")
+    monkeypatch.setattr(backend, "is_agent_running", lambda plugin, pane_id: True)
+    monkeypatch.setattr(
+        backend,
+        "ensure_agent_running",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("ensure_agent_running should not be called")),
+    )
+    monkeypatch.setattr(
+        backend,
+        "wait_for_managed_startup_ready",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("wait_for_managed_startup_ready should not be called")),
+    )
+
+    with pytest.raises(backend.OrcheError, match="Session demo-codex-timeout is not ready because Timed out waiting for Codex SessionStart\\(startup\\) hook in %9"):
+        backend.ensure_session(
+            session,
+            tmp_path,
+            "codex",
+            notify_to="discord",
+            notify_target="123",
+        )
+
+    assert backend.load_meta(session)["startup"]["state"] == "timeout"
+
+
 def test_ensure_native_session_supports_claude_agent_and_stores_native_args(xdg_runtime, tmp_path, monkeypatch):
     monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%8")
     monkeypatch.setattr(backend, "ensure_native_agent_running", lambda *args, **kwargs: "%8")
@@ -781,6 +831,24 @@ def test_wait_for_managed_startup_ready_applies_claude_grace_period(xdg_runtime,
 
     assert pane_id == "%1"
     assert sum(sleeps) >= backend.CLAUDE_STARTUP_GRACE_SECONDS
+
+
+def test_wait_for_managed_startup_ready_rejects_timeout_state_immediately(xdg_runtime, tmp_path):
+    session = "demo-codex-startup-timeout"
+    plugin = backend.get_agent("codex")
+    backend.save_meta(
+        session,
+        {
+            "session": session,
+            "startup": {
+                "state": "timeout",
+                "blocked_reason": "Timed out waiting for Codex SessionStart(startup) hook in %1",
+            },
+        },
+    )
+
+    with pytest.raises(backend.AgentStartupBlockedError, match="Timed out waiting for Codex SessionStart\\(startup\\) hook in %1"):
+        backend.wait_for_managed_startup_ready(session, plugin, "%1", tmp_path, timeout=1.0)
 
 
 def test_wait_for_prompt_ack_accepts_last_completed_turn(xdg_runtime, monkeypatch):
