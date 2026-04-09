@@ -1,442 +1,209 @@
-[English](README.md) · [Install Guide](https://github.com/parkgogogo/tmux-orche/raw/main/install.md)
+<p align="center">
+  <img src="./assets/b9f91b78-1852-453a-8b0d-2cae29185174.png" alt="tmux-orche" width="100%">
+</p>
 
-# tmux-orche
+<h1 align="center">tmux-orche</h1>
 
-一个面向 tmux agent orchestration 的 control plane。
+<p align="center">
+  <a href="https://github.com/parkgogogo/tmux-orche/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
+  <img src="https://img.shields.io/badge/Python-3.9%2B-blue" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/tmux-required-green" alt="tmux required">
+</p>
 
-`tmux-orche` 的核心目的只有一个：让 agent 可以稳定地调用其他 agent 作为 durable subagent，并且带有显式路由、可恢复的终端现场，以及必要时的人类接管能力。
+<p align="center">
+  <b>面向 tmux agent orchestration 的 control plane。</b><br>
+  雇佣 agent。路由结果。必要时随时接管。
+</p>
 
-它不是“给 tmux pane 再包一层命令”。它提供的是 agent 图上的稳定 session 名字、闭环路由和 live terminal 的检查 / 接管能力。
+<p align="center">
+  <a href="README.md">English</a> · <a href="install.md">安装指南</a> · <a href="./docs">文档</a>
+</p>
+
+## tmux-orche 是什么？
+
+当一个 agent 要把任务委派给另一个 agent 时，最难的不是"把任务发出去"，而是**怎么把这个闭环收回来**。
+
+在 `orche` 出现之前，你只能不断**轮询** worker 的状态，每次检查都在消耗 token。**长任务**尤其痛苦：worker 可能跑上十分钟，你只能干等着，或者写一堆脆弱的重试逻辑。如果 worker **卡住或 hang 住**，你往往要在浪费了几十轮轮询之后才发现。而当你终于想**跳进终端亲手排查**时，你甚至不知道那个 agent 到底跑在哪个 pane 里。
+
+**tmux-orche** 把这些痛点一次性解决掉：它把你的 tmux session 变成耐用、可命名的 agent worker。你只需打开一个命名 session、下发任务、然后走开。worker 在 tmux 里持续运行，保留完整的终端现场。任务完成后，结果会自动路由回来。如果自动化卡住了，你——或者另一个 agent——可以随时 attach 到那个正在运行的终端里接管。
+
+无论你用的是 Codex、Claude，还是任何兼容 OpenClaw 的 agent，`orche` 都能提供：
+
+- **稳定的 session 名称**，不再是 `%17` 这种看不懂的 pane ID
+- **显式路由**，结果精准回到该回的地方
+- **耐用的终端现场**，不会因为一次 prompt 结束就丢失上下文
+- **人类接管能力**，自动化不够用时随时能跳进去
 
 ## 安装
 
-完整安装说明：<https://github.com/parkgogogo/tmux-orche/raw/main/install.md>
+### 依赖
 
-如果你想直接安装预编译二进制，不依赖本机 Python 环境：
+- [tmux](https://github.com/tmux/tmux)
+- Python 3.9+
+- `codex` CLI 和/或 `claude` CLI（取决于你用哪些 agent）
+
+### 快速安装
+
+直接安装预编译二进制，无需本机 Python：
 
 ```bash
 curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | sh
 ```
 
-当前提供的预编译目标：`darwin-arm64`、`darwin-x64`、`linux-x64`。
-
-二进制安装后可直接更新：
+原地更新：
 
 ```bash
 orche update
 ```
 
-从 PyPI 安装：
-
-```bash
-pip install tmux-orche
-```
-
-使用 `uv` 安装：
+或使用 `uv` 安装：
 
 ```bash
 uv tool install tmux-orche
 ```
 
-从源码安装：
+[完整安装指南 →](install.md)
+
+## 命令
+
+`orche` 提供了一组精简的 CLI 命令，供 agent 直接调用以管理整个编排闭环：
+
+- **`orche open`** — 创建或复用一个命名的控制端点。agent 调用它来启动一个带工作目录和通知路由的 durable worker。
+- **`orche prompt`** — 向已有 session 委派任务。supervisor agent 通过它把任务发给 worker，而自己不会被阻塞。
+- **`orche status`** — 检查 pane 和 agent 是否存活，以及是否有正在进行的 turn。
+- **`orche read`** — 在不抢占 TTY 的情况下读取最近终端输出，agent 用它快速了解 worker 的当前进度。
+- **`orche attach`** — 接管当前正在运行的终端。当 agent 卡住时，人类（或另一个 agent）可以直接跳进对应的 tmux pane。
+- **`orche close`** — 结束 session 并清理状态。
+
+还有一些高级控制命令：
+
+- **`orche input`** — 向 session 输入文本，但不按 Enter。
+- **`orche key`** — 发送特殊按键，如 `Enter`、`Escape`、`C-c`。
+- **`orche list`** — 列出本地已知 session。
+- **`orche cancel`** — 中断当前 turn，但保留 session。
+- **`orche config`** — 读取或修改共享运行时配置。
+
+## 使用场景
+
+### 1. Codex / Claude 多 Agent 协作
+
+用 `orche` 让多个 agent 在 tmux 里协同工作。例如让 Claude 做 review，Codex 写代码：
 
 ```bash
-git clone https://github.com/parkgogogo/orche
-cd orche
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install .
-```
+# 打开 reviewer session
+orche open --cwd ./repo --agent claude --name repo-reviewer
 
-## 它为什么存在
-
-如果一个 agent 要去监督另一个 agent，你需要的就不只是“在某个 pane 里跑个命令”。
-
-你真正需要的是：
-
-- 每个 worker 都有稳定的 session 名字
-- 结果能沿着显式路由返回
-- 终端状态不会随着一次 prompt 结束而消失
-- 不抢占 TTY 也能检查进度
-- 自动化不够时还能直接接管 live terminal
-
-`orche` 解决的就是这个空档。
-
-## 两种闭环
-
-`orche` 最有价值的地方，不是把命令发出去，而是把控制闭环收回来。
-
-### OpenClaw -> Codex / Claude -> Discord
-
-当 supervisor 是 OpenClaw，而且闭环需要回到 Discord / OpenClaw 时，用 `discord:<channel-id>`。
-
-这条链路的样子是：
-
-- OpenClaw 打开或复用一个 worker session
-- worker 在 tmux 里持续运行并保留现场
-- 完成或 needs-input 事件通过 Discord notify 回传
-- OpenClaw 决定下一步继续调度什么
-
-### Codex reviewer -> worker -> tmux bridge
-
-当 supervisor 本身也是另一个 agent session 时，用 `tmux:<session>`。
-
-这条链路的样子是：
-
-- reviewer session 把任务委派给 worker session
-- worker 通过 tmux bridge 把结果回送给 reviewer
-- reviewer 再决定继续分派、继续 review，还是升级给人类接管
-
-这才是 `orche` 的核心：让一个 agent session 可以可靠地寻址和驱动另一个 agent session。
-
-## 为什么必须是命名 session
-
-原始 tmux pane 不是 control plane。
-
-有了 `orche`，你操作的是 `repo-reviewer`、`repo-worker`、`auth-fixer`，不是 `%17`。
-
-这是关键区别，因为一个命名 session 可以稳定携带：
-
-- 工作目录
-- agent 类型
-- 持久化 tmux pane
-- 显式 notify 路由
-- 后续检查和人工接管能力
-
-## 核心工作流
-
-标准流程就是：
-
-1. `open`
-2. `prompt`
-3. 离开
-4. 之后再 `status` 或 `read`
-5. 需要时 `attach`
-
-## 快速开始
-
-### 原生打开并立即接管的快捷命令
-
-在当前目录打开一个新的 native session 并立刻 attach：
-
-```bash
-orche codex --model gpt-5.4
-orche claude -- --print --help
-```
-
-这些快捷命令会：
-
-- 始终把当前目录作为 `cwd`
-- 把后续参数透传给底层 agent CLI
-- 生成一个新的 session 名，例如 `<repo>-<agent>-<random>`
-
-### 通过 tmux bridge 构建 reviewer-worker 闭环
-
-先打开 reviewer：
-
-```bash
-orche open --cwd /repo --agent codex --name repo-reviewer
-```
-
-再打开一个把结果回给 reviewer 的 worker：
-
-```bash
+# 打开 worker，任务完成后结果回传给 reviewer
 orche open \
-  --cwd /repo \
+  --cwd ./repo \
   --agent codex \
   --name repo-worker \
   --notify tmux:repo-reviewer
+
+# 委派任务，然后直接走开
+orche prompt repo-worker "重构 auth 模块"
 ```
 
-发送任务：
+![Claude + Codex 协作](./assets/orche-scene-claude-codex.png)
 
-```bash
-orche prompt repo-worker "implement the parser refactor"
-```
+也可以反过来：Codex 写代码，Claude 做 review。
 
-稍后检查 reviewer：
+![Code review 闭环](./assets/orche-scene-review.png)
 
-```bash
-orche read repo-reviewer --lines 120
-orche status repo-worker
-```
+### 2. OpenClaw 监督闭环
 
-需要时直接接管 worker：
-
-```bash
-orche attach repo-worker
-```
-
-### 通过 Discord 构建 OpenClaw 闭环
-
-打开一个把结果回给 Discord 的 worker：
+当 supervisor 是 OpenClaw，且闭环需要回到 Discord 时：
 
 ```bash
 orche open \
-  --cwd /repo \
+  --cwd ./repo \
   --agent codex \
   --name repo-worker \
   --notify discord:123456789012345678
+
+orche prompt repo-worker "分析一下失败的测试用例"
 ```
 
-发送任务：
+![OpenClaw 监督](./assets/orche-scene-openclaw.png)
+
+OpenClaw 打开 worker，worker 在 tmux 里保留完整现场运行。完成事件通过 Discord 回传，supervisor 据此决定下一步调度。
+
+### 3. 通过 Skills 扩展能力
+
+`orche` 支持通过 skills 扩展 agent 的能力。skill 本质上是一套放在 agent skills 目录下的指令或工具集。
+
+比如，为 Codex 安装本仓库的 `orche` skill：
 
 ```bash
-orche prompt repo-worker "analyze the failing tests and propose a fix"
+mkdir -p ~/.codex/skills/orche
+curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/codex-claude/SKILL.md \
+  -o ~/.codex/skills/orche/SKILL.md
 ```
 
-之后检查或直接接管：
+为 Claude 安装：
 
 ```bash
-orche status repo-worker
-orche read repo-worker --lines 120
-orche attach repo-worker
+mkdir -p ~/.claude/skills/orche
+curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/codex-claude/SKILL.md \
+  -o ~/.claude/skills/orche/SKILL.md
 ```
 
-## 适合什么场景
-
-`tmux-orche` 特别适合这些情况：
-
-- 一个 reviewer session 协调多个 worker
-- OpenClaw 通过 Discord notify 监督 Codex 或 Claude
-- worker session 需要接受多轮 follow-up
-- 需要在 tmux 内做显式 session-to-session 路由
-- 自动化卡住时还能随时接管 live terminal
-
-如果你只是想执行一次短命令、执行完就结束，那它就不一定有优势。
-
-## Managed 和 Native 的区别
-
-### Managed session
-
-普通 orchestration 用 managed 模式：
+为 OpenClaw 安装：
 
 ```bash
-orche open --cwd /repo --agent codex --name repo-worker --notify tmux:repo-reviewer
+mkdir -p ~/.openclaw/skills/orche
+curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/openclaw/SKILL.md \
+  -o ~/.openclaw/skills/orche/SKILL.md
 ```
-
-这是默认推荐方式，因为 `orche` 才能完整管理 session 元数据和 routing。
-
-### Native session
-
-如果你需要透传原生 agent CLI 参数，用 native 模式：
-
-```bash
-orche open --cwd /repo --agent claude -- --print --help
-```
-
-规则：
-
-- 原生 agent 参数必须放在 `--` 后面
-- native session 不使用 `--notify`
-- 不要把 raw agent args 和 managed notify routing 混用
-
-## 命令模型
-
-- `orche open`
-  创建或复用一个可寻址的 control endpoint。
-- `orche codex` / `orche claude`
-  为当前目录打开一个新的 native session，并立即 attach。
-- `orche prompt`
-  往现有 session 委派工作。
-- `orche status`
-  看 pane 和 agent 是否活着，以及是否还有 pending turn。
-- `orche read`
-  不接管 TTY 的前提下读取最近终端输出。
-- `orche attach`
-  把当前终端接到 live tmux session。
-- `orche input`
-  输入文本但不按 Enter。
-- `orche key`
-  发送特殊按键，比如 `Enter`、`Escape`、`C-c`。
-- `orche list`
-  列出本地已知 session。
-- `orche cancel`
-  中断当前 turn，但保留 session。
-- `orche close`
-  结束 session 并清理状态。
-- `orche whoami`
-  输出当前 session id。
-- `orche config`
-  读取或修改共享运行时配置。
-
-## CLI 入口快捷方式
-
-这些短参数只用于 CLI 入口层：
-
-```bash
-orche -h
-orche -v
-orche config -h
-```
-
-说明：
-
-- `-h` 支持根命令和命令组
-- `-v` 只支持根命令
-- leaf 命令仍然使用 `--help`，例如 `orche attach --help`
-
-## Notify 和路由
-
-Notify 的作用是把控制闭环收回来。
-
-`orche open --notify` 接受：
-
-- `tmux:<target-session>`
-- `discord:<channel-id>`
-
-当接收方是另一个 agent session 时，用 `tmux:<session>`：
-
-```bash
-orche open --cwd /repo --agent codex --name repo-worker --notify tmux:repo-reviewer
-```
-
-当接收方是 OpenClaw / Discord 侧的 supervisor 时，用 `discord:<channel-id>`：
-
-```bash
-orche open --cwd /repo --agent codex --name repo-worker --notify discord:123456789012345678
-```
-
-说明：
-
-- 路由必须显式声明，没有隐式全局默认值
-- 如果要换 notify 目标，直接开一个新 session
-- `tmux` 路由用于 agent-to-agent 闭环
-- `discord` 路由用于 OpenClaw 或外部 supervision 闭环
 
 ## 配置
+
+`orche` 的用户配置保存在 `~/.config/orche/config.json`（若设置了 `XDG_CONFIG_HOME`，则使用 `$XDG_CONFIG_HOME/orche/config.json`）。
+
+常用配置项：
+
+```bash
+# 覆盖 Claude CLI 命令
+orche config set claude.command /opt/tools/claude-wrapper
+
+# 覆盖 Claude source 路径（镜像进 managed runtime）
+orche config set claude.home-path ~/custom/.claude
+orche config set claude.config-path ~/custom/claude.json
+
+# 设置 Discord 通知凭据
+orche config set discord.bot-token "$BOT_TOKEN"
+orche config set discord.mention-user-id 123456789012345678
+orche config set discord.webhook-url "$WEBHOOK_URL"
+
+# 调整 managed session 空闲 TTL（默认 3600 秒，<=0 表示禁用过期回收）
+orche config set managed.ttl-seconds 1800
+
+# 全局启用或禁用 notify 投递
+orche config set notify.enabled true
+```
+
+也可以查看和重置：
 
 ```bash
 orche config list
 orche config get claude.command
-orche config get claude.home-path
-orche config set claude.command /opt/tools/claude-wrapper
-orche config reset claude.command
-orche config set claude.home-path ~/custom/.claude
-orche config set claude.config-path ~/custom/claude.json
-orche config set discord.bot-token "$BOT_TOKEN"
-orche config set discord.mention-user-id 123456789012345678
-orche config set managed.ttl-seconds 1800
-orche config set notify.enabled true
-```
-
-`orche config get/set/reset/list` 读写的是同一个 JSON 配置文件。你既可以通过 CLI 修改，也可以直接编辑这个文件。
-
-配置文件：
-
-```text
-~/.config/orche/config.json
-```
-
-如果设置了 `XDG_CONFIG_HOME`，`orche` 会使用：
-
-```text
-$XDG_CONFIG_HOME/orche/config.json
-```
-
-状态目录：
-
-```text
-~/.local/share/orche/
-```
-
-如果设置了 `XDG_DATA_HOME`，`orche` 会使用：
-
-```text
-$XDG_DATA_HOME/orche/
-```
-
-支持的稳定用户配置项：
-
-- `claude.command`
-  覆盖 `orche` 启动 Claude 时使用的命令，默认值是 `claude`。
-- `claude.home-path`
-  覆盖被镜像进 managed runtime 的 Claude source home 目录，默认值是 `~/.claude`。
-- `claude.config-path`
-  覆盖 Claude trust sync 使用的 source config 路径，默认值是 `~/.claude.json`。
-- `discord.bot-token`
-  设置 bot-token 模式下的 Discord bot token。
-- `discord.mention-user-id`
-  设置通知里要 mention 的 Discord user id。
-- `discord.webhook-url`
-  设置 webhook 模式下的 Discord webhook URL。
-- `managed.ttl-seconds`
-  设置 managed session 的空闲 TTL 秒数，默认值是 `3600`；`<= 0` 表示禁用 TTL 过期回收。
-- `notify.enabled`
-  全局启用或禁用 notify 投递。
-
-说明：
-
-- `config.json` 里也可能出现一些由 `orche` 自己写入的 session 或 runtime 字段。
-- 这些内部字段不属于稳定的手工配置接口。
-- 用户侧配置建议只使用上面这些稳定配置项。
-
-### Claude 自定义配置
-
-如果你的 Claude 安装有二次包装，或者 source home / config 不在默认位置，就用这三个配置项。
-
-设置自定义 Claude 可执行命令：
-
-```bash
-orche config set claude.command /opt/tools/claude-wrapper
-```
-
-设置自定义 Claude source home 路径：
-
-```bash
-orche config set claude.home-path ~/custom/.claude
-```
-
-设置自定义 Claude source config 路径：
-
-```bash
-orche config set claude.config-path ~/custom/claude.json
-```
-
-把其中一个键恢复到默认值：
-
-```bash
 orche config reset claude.command
 ```
 
-这两个键分别控制：
+## 路线图
 
-- `claude.command`
-  控制 `orche` 启动 Claude 时实际执行的命令，可以是原始二进制，也可以是 wrapper script。
-- `claude.home-path`
-  控制 `orche` 在 managed Claude runtime 中镜像哪一个 Claude home 目录。
-- `claude.config-path`
-  控制 `orche` 在 managed Claude worker 做 trust sync 时读取哪一个 Claude 配置文件。
+- [ ] 支持更多 code agent
+- [ ] 支持更多 notify provider
+- [ ] 基于插件的 agent & notify 架构
 
-典型场景：
+因为 `notify` 和 `agent` 都是按插件设计的，你也可以开发自己的插件：
 
-- 你机器上的命令名字不是字面量 `claude`
-- 你是通过 wrapper script 启动 Claude，例如 `/opt/tools/claude-wrapper`
-- 你的 Claude home 目录不在 `~/.claude`
-- 你的 Claude 配置文件不在 `~/.claude.json`
+- [开发 Agent 插件](./docs/agent-plugin-dev.md)
+- [开发 Notify 插件](./docs/notify-plugin-dev.md)
 
-`config.json` 示例：
+## 致谢
 
-```json
-{
-  "claude_command": "/opt/tools/claude-wrapper",
-  "claude_home_path": "/Users/you/custom/.claude",
-  "claude_config_path": "/Users/you/custom/claude.json"
-}
-```
-
-说明：
-
-- `claude.home-path` 和 `claude.config-path` 会一起决定 `orche` 向 managed Claude session 镜像哪一份 Claude source state。
-- 修改这几个键后，新创建的 Claude session 会立即使用新的配置。
-- managed Codex runtime 仍然使用隔离的 `CODEX_HOME`；`orche` 也会在这份隔离配置里写入 `check_for_update_on_startup = false` 和 `[notice].hide_rate_limit_model_nudge = true`，避免启动时的自动更新检查和模型切换提醒干扰托管 session。
-
-## 前置条件
-
-- `tmux`
-- `codex` CLI 和/或 `claude` CLI
-- Python `3.9+`
+`tmux-orche` 的设计受到了 [ShawnPana/smux](https://github.com/ShawnPana/smux) 的启发，在 tmux session 管理和 agent orchestration 方面给了我们很多灵感。
 
 ## License
 
