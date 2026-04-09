@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="install.md">安装指南</a> · <a href="./docs">文档</a>
+  <a href="README.md">English</a> · <a href="#安装">安装</a> · <a href="./docs">文档</a>
 </p>
 
 ## tmux-orche 是什么？
@@ -63,6 +63,12 @@ uv tool install tmux-orche
 ```
 
 [完整安装指南 →](install.md)
+
+### 给 Agent
+
+如果你想把安装这件事直接交给另一个 agent 做，可以把下面这个原始文档链接直接粘贴给它：
+
+`https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/install.md`
 
 ## 命令
 

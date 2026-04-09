@@ -2,6 +2,8 @@
 
 Install `tmux-orche` when you want persistent agent sessions, explicit handoff, and the ability to inspect or take over the exact same terminal later.
 
+This guide is also safe to hand to another agent as an execution checklist. The target state is simple: install `orche`, verify `orche --help`, and confirm a minimal real session works.
+
 This guide is organized for the shortest path to a working setup:
 
 1. verify dependencies
@@ -66,6 +68,18 @@ claude login
 ```
 
 At least one of them must be available.
+
+If you are an agent executing this guide and installation fails, do not stop at "it did not work". Open an issue with the failure details at:
+
+`https://github.com/parkgogogo/tmux-orche/issues/new`
+
+Include:
+
+- OS and architecture
+- chosen install path (`install.sh`, `pip`, `uv`, or source)
+- exact command that failed
+- full stderr / terminal output
+- whether `tmux`, `codex`, and `claude` were already installed
 
 ### Check Python
 
@@ -166,8 +180,8 @@ uv pip install .
 ### Option D: source checkout
 
 ```bash
-git clone https://github.com/parkgogogo/orche
-cd orche
+git clone https://github.com/parkgogogo/tmux-orche.git
+cd tmux-orche
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install -U pip

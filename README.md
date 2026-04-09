@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="README.zh.md">中文</a> · <a href="install.md">Install Guide</a> · <a href="./docs">Docs</a>
+  <a href="README.zh.md">中文</a> · <a href="#installation">Installation</a> · <a href="./docs">Docs</a>
 </p>
 
 ## What is tmux-orche?
@@ -63,6 +63,12 @@ uv tool install tmux-orche
 ```
 
 [Full install guide →](install.md)
+
+### For Agents
+
+If you want another agent to install `tmux-orche` for you, paste this raw guide link into that agent session:
+
+`https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/install.md`
 
 ## Commands
 
