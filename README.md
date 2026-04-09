@@ -1,16 +1,48 @@
-[中文](README.zh.md) · [Install Guide](https://github.com/parkgogogo/tmux-orche/raw/main/install.md)
+<p align="center">
+  <img src="./assets/b9f91b78-1852-453a-8b0d-2cae29185174.png" alt="tmux-orche" width="100%">
+</p>
 
-# tmux-orche
+<h1 align="center">tmux-orche 🎼</h1>
 
-Control plane for tmux-backed agent orchestration.
+<p align="center">
+  <a href="https://github.com/parkgogogo/tmux-orche/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
+  <img src="https://img.shields.io/badge/Python-3.9%2B-blue" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/tmux-required-green" alt="tmux required">
+</p>
 
-`tmux-orche` exists for one job: let agents call other agents as durable subagents, with explicit routing, recoverable terminal state, and human takeover when needed.
+<p align="center">
+  <b>Control plane for tmux-backed agent orchestration.</b><br>
+  Hire agents. Route their results. Take over when you need to.
+</p>
 
-It is not just a wrapper around tmux panes. It gives your agent graph stable session names, control-loop routing, and a way to inspect or attach to the exact live terminal that is doing the work.
+<p align="center">
+  <a href="README.zh.md">中文</a> · <a href="#installation">Installation</a> · <a href="./docs">Docs</a>
+</p>
+
+## What is tmux-orche?
+
+When an agent delegates work to another agent, the hard part isn't starting the task—it's **managing the loop**.
+
+Before `orche`, you have to **keep polling** to see if the worker is done, burning tokens on every status check. **Long tasks** are especially painful: the worker might run for ten minutes, and you're stuck either waiting idly or building fragile retry logic. If the worker **hangs or stalls**, you only find out after wasting dozens of polling rounds. And when you finally want to **jump in and fix something**, you have no idea which terminal the agent is actually running in.
+
+**tmux-orche** solves this by turning your tmux sessions into durable, named agent workers. Instead of polling, you open a named session, send the task, and walk away. The worker keeps running inside tmux with full terminal state. When it's done, the result routes back automatically. If something gets stuck, you—or another agent—can attach to the exact live terminal and take over.
+
+Whether you are running Codex, Claude, or any OpenClaw-compatible agent, `orche` gives you:
+
+- **Stable session names** instead of raw pane IDs like `%17`
+- **Explicit routing** for results to come back exactly where they should
+- **Durable terminal state** that survives beyond one prompt
+- **Human takeover** when automation needs a nudge
 
 ## Installation
 
-Full install guide: <https://github.com/parkgogogo/tmux-orche/raw/main/install.md>
+### Dependencies
+
+- [tmux](https://github.com/tmux/tmux)
+- Python 3.9+ for `pip`, `uv`, or source installs
+- `codex` CLI and/or `claude` CLI (depending on which agents you use)
+
+### Quick Install
 
 Install the latest prebuilt binary without Python:
 
@@ -18,446 +50,170 @@ Install the latest prebuilt binary without Python:
 curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | sh
 ```
 
-Supported prebuilt targets: `darwin-arm64`, `darwin-x64`, `linux-x64`.
-
-Update a binary install in place:
+Update in place:
 
 ```bash
 orche update
 ```
 
-Install from PyPI:
-
-```bash
-pip install tmux-orche
-```
-
-Install with `uv`:
+Or install with `uv`:
 
 ```bash
 uv tool install tmux-orche
 ```
 
-Install from source:
+If `install.sh` or `uv` is not a fit, check `install.md` for `pip`, source checkout, and troubleshooting paths.
+
+Verify the install:
 
 ```bash
-git clone https://github.com/parkgogogo/orche
-cd orche
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install .
+orche --help
 ```
 
-## Why It Exists
+### For Agents
 
-If one agent is going to supervise another, you need more than "run a command in some pane".
+If you want another agent to install `tmux-orche` for you, paste this raw guide link into that agent session:
 
-You need:
+`https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/install.md`
 
-- a stable session name for each worker
-- an explicit route for results to come back
-- terminal state that survives beyond one prompt
-- a way to inspect progress without stealing the TTY
-- a way to take over the live terminal when automation is not enough
+## Commands
 
-That is the gap `orche` fills.
+`orche` exposes a small set of CLI commands that agents call directly to manage the orchestration loop:
 
-## Control Loops
+- **`orche open`** — Create or reuse a named control endpoint. An agent calls this to spin up a durable worker with a fixed working directory and an explicit notify route.
+- **`orche prompt`** — Delegate work into an existing session. This is how a supervisor agent sends a task to a worker without blocking.
+- **`orche status`** — Check whether the pane and agent are alive, and whether a turn is pending. Useful for agents to decide whether to wait or take action.
+- **`orche read`** — Inspect recent terminal output without stealing the TTY. Agents use this to catch up on what a worker has produced so far.
+- **`orche attach`** — Take over the live terminal. When an agent gets stuck, a human (or another agent) can drop straight into the exact tmux pane.
+- **`orche close`** — End the session and clean up state. Called when the worker is no longer needed.
 
-`orche` is most useful when you want a real loop to close, not just a one-shot command to finish.
+There are also a few helper commands for advanced control:
 
-### OpenClaw -> Codex or Claude -> Discord
+- **`orche input`** — Type text into a session without pressing Enter.
+- **`orche key`** — Send special keys such as `Enter`, `Escape`, or `C-c`.
+- **`orche list`** — List locally known sessions.
+- **`orche cancel`** — Interrupt the current turn but keep the session alive.
+- **`orche config`** — Read or update shared runtime config.
 
-Use `discord:<channel-id>` when OpenClaw is supervising the worker and the loop should close back into Discord/OpenClaw.
+## Usage Scenarios
 
-This is the "external supervisor" path:
+### 1. Codex / Claude Multi-Agent Loop
 
-- OpenClaw opens or reuses a worker session
-- the worker runs in tmux with durable state
-- completion or needs-input events route back through Discord notify
-- OpenClaw can decide what to do next
-
-### Codex reviewer -> worker -> tmux bridge
-
-Use `tmux:<session>` when another agent session is the supervisor.
-
-This is the "in-terminal reviewer" path:
-
-- a reviewer session delegates work to a worker session
-- the worker reports back to the reviewer through tmux bridge
-- the reviewer can inspect, continue delegation, or escalate to a human
-
-That is the core model: `orche` is the control plane that lets one agent session address another agent session reliably.
-
-## Why Named Sessions Matter
-
-Raw tmux panes are not a control plane.
-
-With `orche`, you work with `repo-reviewer`, `repo-worker`, or `auth-fixer`, not `%17`.
-
-That difference matters because a named session can carry:
-
-- a working directory
-- an agent type
-- a persistent tmux pane
-- an explicit notify route
-- later inspection and human takeover
-
-## Core Workflow
-
-The normal loop is:
-
-1. `open`
-2. `prompt`
-3. leave
-4. `status` or `read` later
-5. `attach` if a human needs to take over
-
-## Quick Start
-
-### Fast native attach shortcuts
-
-Open a new native session in the current directory and attach immediately:
+Use `orche` when you want agents to collaborate inside tmux. For example, let Claude review while Codex writes code:
 
 ```bash
-orche codex --model gpt-5.4
-orche claude -- --print --help
-```
+# Open a reviewer session
+orche open --cwd ./repo --agent claude --name repo-reviewer
 
-These shortcuts:
-
-- always use the current directory as `cwd`
-- forward trailing args to the underlying agent CLI
-- create a fresh session name like `<repo>-<agent>-<random>`
-
-### Reviewer-worker loop via tmux bridge
-
-Open a reviewer that receives worker results:
-
-```bash
-orche open --cwd /repo --agent codex --name repo-reviewer
-```
-
-Open a worker that reports back to the reviewer:
-
-```bash
+# Open a worker that reports back to the reviewer
 orche open \
-  --cwd /repo \
+  --cwd ./repo \
   --agent codex \
   --name repo-worker \
   --notify tmux:repo-reviewer
+
+# Delegate work and walk away
+orche prompt repo-worker "refactor the auth module"
 ```
 
-Send work to the worker:
+![Claude + Codex workflow](./assets/b9f91b78-1852-453a-8b0d-2cae29185174.png)
 
-```bash
-orche prompt repo-worker "implement the parser refactor"
-```
+*The image above shows a Codex supervisor using 2 Codex and 2 Claude agents to simultaneously perform code review.*
 
-Check the reviewer later:
+### 2. OpenClaw Supervision Loop
 
-```bash
-orche read repo-reviewer --lines 120
-orche status repo-worker
-```
-
-Take over the worker if needed:
-
-```bash
-orche attach repo-worker
-```
-
-### OpenClaw loop via Discord
-
-Open a worker that reports back through Discord:
+When OpenClaw is supervising the worker and the loop should close back into Discord:
 
 ```bash
 orche open \
-  --cwd /repo \
+  --cwd ./repo \
   --agent codex \
   --name repo-worker \
   --notify discord:123456789012345678
+
+orche prompt repo-worker "analyze the failing tests"
 ```
 
-Send work:
+![OpenClaw supervision](./assets/openclaw-supervision-loop.png)
+
+OpenClaw opens the worker, the worker runs in tmux with durable state, and completion events route back through Discord so the supervisor can decide what happens next.
+
+### 3. Extending with Skills
+
+`orche` supports skills to extend agent capabilities. A skill is a set of instructions placed in the agent's skills directory.
+
+For example, to install the `orche` skill from this repository for Codex:
 
 ```bash
-orche prompt repo-worker "analyze the failing tests and propose a fix"
+mkdir -p ~/.codex/skills/orche
+curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/codex-claude/SKILL.md \
+  -o ~/.codex/skills/orche/SKILL.md
 ```
 
-Inspect later or attach directly:
+For Claude:
 
 ```bash
-orche status repo-worker
-orche read repo-worker --lines 120
-orche attach repo-worker
+mkdir -p ~/.claude/skills/orche
+curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/codex-claude/SKILL.md \
+  -o ~/.claude/skills/orche/SKILL.md
 ```
 
-## Best Fit Scenarios
-
-`tmux-orche` is a good fit when you want:
-
-- one reviewer session coordinating multiple workers
-- OpenClaw supervising Codex or Claude through Discord notify
-- durable worker sessions that accept multiple follow-up prompts
-- explicit session-to-session routing inside tmux
-- a live terminal takeover path when the loop gets stuck
-
-It is less useful when you only need one short-lived command and do not plan to revisit the session.
-
-## Testing
-
-The repo keeps normal unit/integration tests separate from real end-to-end tests.
-
-Real E2E means:
-
-- real `orche` CLI
-- real `tmux`
-- real `codex`
-- real session-to-session prompt and notify flow
-
-The real E2E suites are:
-
-- `tests/test_notify_e2e.py`
-- `tests/test_session_collaboration_e2e.py`
-
-They are opt-in and require a working local environment:
+For OpenClaw:
 
 ```bash
-ORCHE_RUN_E2E=1 python3 -m pytest -q tests/test_notify_e2e.py tests/test_session_collaboration_e2e.py
+mkdir -p ~/.openclaw/skills/orche
+curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/openclaw/SKILL.md \
+  -o ~/.openclaw/skills/orche/SKILL.md
 ```
 
-If `tmux` or `codex` is missing, or Codex is not logged in, those suites skip instead of simulating success.
+## Configuration
 
-## Managed vs Native Sessions
+`orche` stores user configuration in `~/.config/orche/config.json` (or `$XDG_CONFIG_HOME/orche/config.json`).
 
-### Managed session
-
-Use managed mode for normal orchestration:
+Common settings you may want to adjust:
 
 ```bash
-orche open --cwd /repo --agent codex --name repo-worker --notify tmux:repo-reviewer
+# Override the Claude CLI command
+orche config set claude.command /opt/tools/claude-wrapper
+
+# Override Claude source paths mirrored into managed runtimes
+orche config set claude.home-path ~/custom/.claude
+orche config set claude.config-path ~/custom/claude.json
+
+# Set Discord notify credentials
+orche config set discord.bot-token "$BOT_TOKEN"
+orche config set discord.mention-user-id 123456789012345678
+orche config set discord.webhook-url "$WEBHOOK_URL"
+
+# Adjust managed session idle TTL (default 3600s, <=0 disables expiry)
+orche config set managed.ttl-seconds 1800
+
+# Enable or disable notify delivery globally
+orche config set notify.enabled true
 ```
 
-This is the default recommendation because `orche` can manage session metadata and routing coherently.
-
-### Native session
-
-Use native mode when you need raw agent CLI args:
-
-```bash
-orche open --cwd /repo --agent claude -- --print --help
-```
-
-Rules:
-
-- raw agent args must come after `--`
-- native sessions do not use `--notify`
-- do not mix raw agent args with managed notify routing
-
-## Command Model
-
-- `orche open`
-  Create or reuse a named control endpoint.
-- `orche codex` / `orche claude`
-  Open a fresh native session for the current directory and attach immediately.
-- `orche prompt`
-  Delegate work into an existing session.
-- `orche status`
-  Check whether the pane and agent are alive, and whether a turn is pending.
-- `orche read`
-  Inspect recent terminal output without taking over the TTY.
-- `orche attach`
-  Attach your terminal to the live tmux session.
-- `orche input`
-  Type text without pressing Enter.
-- `orche key`
-  Send special keys such as `Enter`, `Escape`, or `C-c`.
-- `orche list`
-  List locally known sessions.
-- `orche cancel`
-  Interrupt the current turn but keep the session alive.
-- `orche close`
-  End the session and clean up state.
-- `orche whoami`
-  Print the current session id.
-- `orche config`
-  Read or update shared runtime config.
-
-## CLI Entry Shortcuts
-
-Use the short flags on CLI entry surfaces:
-
-```bash
-orche -h
-orche -v
-orche config -h
-```
-
-Notes:
-
-- `-h` is supported on the root command and command groups
-- `-v` is supported on the root command only
-- leaf commands still use `--help`, for example `orche attach --help`
-
-## Notify and Routing
-
-Notify is how control loops close.
-
-`orche open --notify` accepts:
-
-- `tmux:<target-session>`
-- `discord:<channel-id>`
-
-Use `tmux:<session>` when another agent session should receive the result:
-
-```bash
-orche open --cwd /repo --agent codex --name repo-worker --notify tmux:repo-reviewer
-```
-
-Use `discord:<channel-id>` when the supervisor is OpenClaw or another Discord-facing control loop:
-
-```bash
-orche open --cwd /repo --agent codex --name repo-worker --notify discord:123456789012345678
-```
-
-Notes:
-
-- routing is explicit; there is no implicit global default
-- changing the notify target means opening a new session
-- `tmux` routing is for agent-to-agent loops
-- `discord` routing is for OpenClaw or external supervision loops
-
-## Config
+You can also view and reset values:
 
 ```bash
 orche config list
 orche config get claude.command
-orche config get claude.home-path
-orche config set claude.command /opt/tools/claude-wrapper
-orche config reset claude.command
-orche config set claude.home-path ~/custom/.claude
-orche config set claude.config-path ~/custom/claude.json
-orche config set discord.bot-token "$BOT_TOKEN"
-orche config set discord.mention-user-id 123456789012345678
-orche config set managed.ttl-seconds 1800
-orche config set notify.enabled true
-```
-
-`orche config get/set/reset/list` reads and writes the same JSON config file. You can update values through the CLI or edit the file directly.
-
-Config file:
-
-```text
-~/.config/orche/config.json
-```
-
-If `XDG_CONFIG_HOME` is set, `orche` uses:
-
-```text
-$XDG_CONFIG_HOME/orche/config.json
-```
-
-State directory:
-
-```text
-~/.local/share/orche/
-```
-
-If `XDG_DATA_HOME` is set, `orche` uses:
-
-```text
-$XDG_DATA_HOME/orche/
-```
-
-Supported user config keys:
-
-- `claude.command`
-  Override the Claude CLI command that `orche` launches. Default is `claude`.
-- `claude.home-path`
-  Override the Claude source home directory mirrored into managed runtimes. Default is `~/.claude`.
-- `claude.config-path`
-  Override the Claude source config path used for trust sync. Default is `~/.claude.json`.
-- `discord.bot-token`
-  Set the Discord bot token used for bot-token delivery.
-- `discord.mention-user-id`
-  Set the Discord user id to mention in delivered notifications.
-- `discord.webhook-url`
-  Set the Discord webhook URL used for webhook delivery.
-- `managed.ttl-seconds`
-  Set the managed-session idle TTL in seconds. Default is `3600`; `<= 0` disables TTL expiry.
-- `notify.enabled`
-  Enable or disable notify delivery globally.
-
-Notes:
-
-- `config.json` may also contain session or runtime fields written by `orche` itself.
-- Those internal fields are not part of the stable hand-edited config surface.
-- Prefer the keys above for user-managed configuration.
-
-### Claude custom config
-
-Use these when your Claude installation is wrapped or its source home/config is not in the default location.
-
-Set a custom Claude executable:
-
-```bash
-orche config set claude.command /opt/tools/claude-wrapper
-```
-
-Set a custom Claude source home path:
-
-```bash
-orche config set claude.home-path ~/custom/.claude
-```
-
-Set a custom Claude source config path for trust sync:
-
-```bash
-orche config set claude.config-path ~/custom/claude.json
-```
-
-Reset one of these keys back to its default:
-
-```bash
 orche config reset claude.command
 ```
 
-What each key changes:
+## Roadmap
 
-- `claude.command` changes the binary or wrapper command that `orche` executes when it launches Claude.
-- `claude.home-path` changes which Claude home directory `orche` mirrors into managed Claude runtimes.
-- `claude.config-path` changes which Claude config file `orche` reads when it syncs trust settings into a managed worker runtime.
+- [ ] Support more code agents
+- [ ] Support more notify providers
+- [ ] Plugin-based agent & notify architecture
 
-Typical cases:
+Because both `notify` and `agent` are designed as plugins, you can also develop your own. Check out:
 
-- your system command is not literally named `claude`
-- you use a wrapper script such as `/opt/tools/claude-wrapper`
-- your Claude home directory is not `~/.claude`
-- your Claude config lives somewhere other than `~/.claude.json`
+- [Developing Agent Plugins](./docs/agent-plugin-dev.md)
+- [Developing Notify Plugins](./docs/notify-plugin-dev.md)
 
-Example `config.json`:
+## Acknowledgements
 
-```json
-{
-  "claude_command": "/opt/tools/claude-wrapper",
-  "claude_home_path": "/Users/you/custom/.claude",
-  "claude_config_path": "/Users/you/custom/claude.json"
-}
-```
-
-Notes:
-
-- `claude.home-path` and `claude.config-path` affect the source Claude state that `orche` mirrors into managed Claude sessions.
-- after changing any of these keys, new Claude sessions use the updated value immediately.
-- managed Codex runtimes keep using an isolated `CODEX_HOME`; `orche` also writes `check_for_update_on_startup = false` and `[notice].hide_rate_limit_model_nudge = true` there to avoid startup update checks and model-switch nudges interfering with managed sessions.
-
-## Prerequisites
-
-- `tmux`
-- `codex` CLI and/or `claude` CLI
-- Python `3.9+`
+`tmux-orche` was inspired by [ShawnPana/smux](https://github.com/ShawnPana/smux), which gave us many ideas on tmux session management and agent orchestration.
 
 ## License
 
