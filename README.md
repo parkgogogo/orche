@@ -108,10 +108,6 @@ orche prompt repo-worker "refactor the auth module"
 
 *The image above shows a Codex supervisor using 2 Codex and 2 Claude agents to simultaneously perform code review.*
 
-Or reverse the roles: Codex writes, Claude reviews.
-
-![Code review loop](./assets/orche-scene-review.png)
-
 ### 2. OpenClaw Supervision Loop
 
 When OpenClaw is supervising the worker and the loop should close back into Discord:

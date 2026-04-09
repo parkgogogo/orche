@@ -108,10 +108,6 @@ orche prompt repo-worker "重构 auth 模块"
 
 *上图展示了一个 Codex supervisor 同时调用 2 个 Codex 和 2 个 Claude agent 进行并行 code review 的场景。*
 
-也可以反过来：Codex 写代码，Claude 做 review。
-
-![Code review 闭环](./assets/orche-scene-review.png)
-
 ### 2. OpenClaw 监督闭环
 
 当 supervisor 是 OpenClaw，且闭环需要回到 Discord 时：
