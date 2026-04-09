@@ -85,6 +85,24 @@ def test_backend_list_sessions_returns_sorted_metadata(xdg_runtime):
     assert sessions[0]["cwd"] == "/tmp/alpha"
 
 
+def test_save_meta_preserves_existing_file_when_atomic_replace_fails(xdg_runtime, monkeypatch):
+    backend.save_meta("demo-session", {"session": "demo-session", "state": "before"})
+    path = backend.meta_path("demo-session")
+    original_replace = Path.replace
+
+    def failing_replace(self, target):
+        if Path(target) == path:
+            raise OSError("replace failed")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", failing_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        backend.save_meta("demo-session", {"session": "demo-session", "state": "after"})
+
+    assert backend.load_meta("demo-session")["state"] == "before"
+
+
 def test_list_sessions_prunes_stale_metadata(xdg_runtime, monkeypatch):
     backend.save_meta(
         "live-session",

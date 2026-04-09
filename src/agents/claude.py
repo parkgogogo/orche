@@ -8,15 +8,16 @@ import time
 from pathlib import Path
 
 from json_utils import JSONInputTooLargeError, read_json_file
-from paths import ensure_directories, locks_dir
+from paths import locks_dir
 
 from .base import AgentPlugin, AgentRuntime, BridgeIO
 from .common import (
     DEFAULT_RUNTIME_HOME_ROOT,
     ensure_orche_shim,
+    flock_path_lock,
     normalize_runtime_home,
     remove_runtime_home,
-    session_key,
+    session_storage_key,
     validate_discord_channel_id,
     write_notify_hook,
     write_text_atomically,
@@ -120,7 +121,7 @@ def _find_next_claude_prompt(lines: list[str], start_index: int) -> int | None:
 
 
 def default_claude_home_path(session: str) -> Path:
-    return DEFAULT_RUNTIME_HOME_ROOT / f"orche-claude-{session_key(session)}"
+    return DEFAULT_RUNTIME_HOME_ROOT / f"orche-claude-{session_storage_key(session)}"
 
 
 def default_notify_hook_path(runtime_home: Path) -> Path:
@@ -164,25 +165,14 @@ def source_settings_path() -> Path:
 
 @contextlib.contextmanager
 def source_config_lock(*, timeout: float = 5.0):
-    ensure_directories()
     path = locks_dir() / f"{SOURCE_CONFIG_LOCK_NAME}.lock"
-    deadline = time.time() + timeout
-    while True:
-        try:
-            fd = path.open("x")
-            break
-        except FileExistsError:
-            if time.time() > deadline:
-                raise RuntimeError("Timed out waiting for Claude source config lock")
-            time.sleep(0.1)
-    try:
-        fd.write(str(Path.cwd()))
-        fd.flush()
+    with flock_path_lock(
+        path,
+        timeout=timeout,
+        error_message="Timed out waiting for Claude source config lock",
+        details=str(Path.cwd()),
+    ):
         yield
-    finally:
-        fd.close()
-        with contextlib.suppress(FileNotFoundError):
-            path.unlink()
 
 
 def _read_json_object(path: Path) -> dict[str, object]:

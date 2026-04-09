@@ -22,9 +22,11 @@ from agents.claude import ClaudeAgent, default_claude_home_path
 from agents.codex import CodexAgent, SOURCE_CONFIG_BACKUP_SUFFIX, default_codex_home_path
 from agents.common import (
     ensure_orche_shim,
+    flock_path_lock,
     normalize_runtime_home,
     orche_bootstrap_command,
     remove_runtime_home,
+    session_storage_key,
     validate_discord_channel_id as common_validate_discord_channel_id,
     write_text_atomically,
 )
@@ -215,34 +217,33 @@ def window_name(session: str) -> str:
 
 
 def tmux_session_name(session: str) -> str:
-    return f"{TMUX_SESSION}-{session_key(session)}"
+    return f"{TMUX_SESSION}-{session_storage_key(session)}"
 
 
-def session_key(session: str) -> str:
-    return slugify(session)
+session_key = session_storage_key
 
 
 def history_path(session: str) -> Path:
-    return history_dir() / f"{session_key(session)}.jsonl"
+    return history_dir() / f"{session_storage_key(session)}.jsonl"
 
 
 def meta_path(session: str) -> Path:
-    return meta_dir() / f"{session_key(session)}.json"
+    return meta_dir() / f"{session_storage_key(session)}.json"
 
 
 def lock_path(session: str) -> Path:
-    return locks_dir() / f"{session_key(session)}.lock"
+    return locks_dir() / f"{session_storage_key(session)}.lock"
 
 
 def notify_target_lock_path(session: str) -> Path:
-    return locks_dir() / f"{session_key(session)}.notify.lock"
+    return locks_dir() / f"{session_storage_key(session)}.notify.lock"
 
 
 def inline_host_lock_path(tmux_session: str, host_pane_id: str = "") -> Path:
     scope = tmux_session.strip()
     host = host_pane_id.strip()
     key = f"{scope}-{host}" if host else scope
-    return locks_dir() / f"inline-host-{session_key(key or 'default')}.lock"
+    return locks_dir() / f"inline-host-{session_storage_key(key or 'default')}.lock"
 
 
 def run(
@@ -723,7 +724,7 @@ def recent_capture_excerpt(capture: str, *, lines: int = NOTIFY_TAIL_LINES, max_
 
 def save_meta(session: str, meta: Dict[str, Any]) -> None:
     ensure_directories()
-    meta_path(session).write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    write_text_atomically(meta_path(session), json.dumps(meta, indent=2, ensure_ascii=False) + "\n")
 
 
 def load_meta(session: str) -> Dict[str, Any]:
@@ -1219,25 +1220,13 @@ def update_runtime_config(
 
 @contextlib.contextmanager
 def _path_lock(path: Path, *, timeout: float, error_message: str):
-    ensure_directories()
-    deadline = time.time() + timeout
-    while True:
-        try:
-            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            break
-        except FileExistsError:
-            if time.time() > deadline:
-                raise OrcheError(error_message)
-            time.sleep(0.1)
-    try:
-        os.write(fd, str(os.getpid()).encode())
+    with flock_path_lock(
+        path,
+        timeout=timeout,
+        error_message=error_message,
+        exc_type=OrcheError,
+    ):
         yield
-    finally:
-        os.close(fd)
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
 
 
 @contextlib.contextmanager
@@ -3325,6 +3314,7 @@ def send_prompt(
 ) -> str:
     plugin = get_agent(agent)
     meta = load_meta(session)
+    previous_pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else None
     if session_launch_mode(meta) == "native":
         pane_id = ensure_native_session(
             session,
@@ -3365,8 +3355,21 @@ def send_prompt(
         },
     }
     save_meta(session, meta)
+    try:
+        plugin.submit_prompt(session, prompt, bridge=BRIDGE)
+    except Exception:
+        rollback_meta = load_meta(session)
+        current_pending_turn = (
+            rollback_meta.get("pending_turn") if isinstance(rollback_meta.get("pending_turn"), dict) else None
+        )
+        if str((current_pending_turn or {}).get("turn_id") or "") == turn_id:
+            if previous_pending_turn is None:
+                rollback_meta.pop("pending_turn", None)
+            else:
+                rollback_meta["pending_turn"] = previous_pending_turn
+            save_meta(session, rollback_meta)
+        raise
     touch_session_event(session, source="prompt-submit")
-    plugin.submit_prompt(session, prompt, bridge=BRIDGE)
     try:
         start_session_watchdog(session, turn_id=turn_id)
     except Exception as exc:  # pragma: no cover

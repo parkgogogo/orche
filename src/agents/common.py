@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import contextlib
+import fcntl
+import hashlib
 import os
 import re
 import shlex
 import shutil
 import sys
 import tempfile
+import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -14,6 +18,10 @@ from paths import bridges_dir, ensure_directories
 
 
 DEFAULT_RUNTIME_HOME_ROOT = Path(tempfile.gettempdir())
+SESSION_STORAGE_KEY_HASH_BYTES = 6
+SESSION_STORAGE_KEY_SLUG_LIMIT = 48
+_PROCESS_FILE_LOCKS: dict[str, threading.Lock] = {}
+_PROCESS_FILE_LOCKS_GUARD = threading.Lock()
 
 
 def normalize_runtime_home(runtime_home: str | Path | None) -> str:
@@ -22,17 +30,78 @@ def normalize_runtime_home(runtime_home: str | Path | None) -> str:
     return str(Path(str(runtime_home)).expanduser().resolve())
 
 
-def session_key(session: str) -> str:
+def slugify_storage_name(value: str) -> str:
     lowered = []
-    for ch in session.lower():
+    previous_separator = False
+    for ch in str(value or "").lower():
         if ch.isalnum():
             lowered.append(ch)
-        elif ch in ("-", "_", "/", "."):
+            previous_separator = False
+            continue
+        if not previous_separator:
             lowered.append("-")
-    value = "".join(lowered)
-    while "--" in value:
-        value = value.replace("--", "-")
-    return value.strip("-") or "root"
+            previous_separator = True
+    return "".join(lowered).strip("-") or "root"
+
+
+def session_storage_key(session: str) -> str:
+    original = str(session or "")
+    slug = slugify_storage_name(original)
+    if len(slug) > SESSION_STORAGE_KEY_SLUG_LIMIT:
+        slug = slug[:SESSION_STORAGE_KEY_SLUG_LIMIT].rstrip("-") or "root"
+    digest = hashlib.blake2s(original.encode("utf-8"), digest_size=SESSION_STORAGE_KEY_HASH_BYTES).hexdigest()
+    return f"{slug}-{digest}"
+
+
+session_key = session_storage_key
+
+
+def _process_file_lock(path: Path) -> threading.Lock:
+    key = os.path.abspath(os.fspath(path.expanduser()))
+    with _PROCESS_FILE_LOCKS_GUARD:
+        lock = _PROCESS_FILE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _PROCESS_FILE_LOCKS[key] = lock
+        return lock
+
+
+@contextlib.contextmanager
+def flock_path_lock(
+    path: Path,
+    *,
+    timeout: float,
+    error_message: str,
+    details: str = "",
+    exc_type: type[Exception] = RuntimeError,
+):
+    ensure_directories()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + max(timeout, 0.0)
+    process_lock = _process_file_lock(path)
+    remaining = max(deadline - time.monotonic(), 0.0)
+    if not process_lock.acquire(timeout=remaining):
+        raise exc_type(error_message)
+    handle = path.open("a+", encoding="utf-8")
+    try:
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    raise exc_type(error_message)
+                time.sleep(0.1)
+        handle.seek(0)
+        handle.truncate()
+        handle.write(details or str(os.getpid()))
+        handle.flush()
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+        process_lock.release()
 
 
 def validate_discord_channel_id(value: str) -> str:
@@ -56,14 +125,16 @@ def write_text_atomically(path: Path, content: str, *, backup_path: Path | None 
 
 
 def remove_runtime_home(runtime_home: str | Path) -> None:
-    normalized = Path(normalize_runtime_home(runtime_home))
-    candidates: list[Path] = []
-    for candidate in (normalized, normalized.resolve()):
-        if candidate not in candidates:
-            candidates.append(candidate)
-    for candidate in candidates:
-        if candidate.exists():
-            shutil.rmtree(candidate, ignore_errors=True)
+    raw_value = str(runtime_home or "").strip()
+    if not raw_value:
+        return
+    candidate = Path(os.path.abspath(os.fspath(Path(raw_value).expanduser())))
+    if candidate.is_symlink():
+        with contextlib.suppress(FileNotFoundError):
+            candidate.unlink()
+        return
+    if candidate.is_dir():
+        shutil.rmtree(candidate, ignore_errors=True)
 
 
 def write_notify_hook(hook_path: Path) -> None:

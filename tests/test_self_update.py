@@ -157,6 +157,23 @@ def test_perform_self_update_repairs_stale_install_metadata(xdg_runtime, tmp_pat
     assert metadata["executable_path"] == str(current_executable.resolve())
 
 
+def test_runtime_link_path_prefers_path_lookup_for_bare_argv0(xdg_runtime, tmp_path, monkeypatch):
+    cwd_binary = tmp_path / "orche"
+    cwd_binary.write_text("#!/bin/sh\necho cwd\n", encoding="utf-8")
+    cwd_binary.chmod(0o755)
+    path_dir = tmp_path / "bin"
+    path_dir.mkdir()
+    path_binary = path_dir / "orche"
+    path_binary.write_text("#!/bin/sh\necho path\n", encoding="utf-8")
+    path_binary.chmod(0o755)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", str(path_dir))
+    monkeypatch.setattr(self_update.sys, "argv", ["orche"])
+
+    assert self_update.runtime_link_path() == path_binary.resolve()
+
+
 def test_install_release_archive_supports_legacy_single_binary_layout(xdg_runtime, tmp_path):
     archive_path = _write_legacy_release_archive(
         tmp_path,

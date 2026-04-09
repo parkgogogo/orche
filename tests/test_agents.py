@@ -9,6 +9,7 @@ from pathlib import Path
 
 import backend
 import pytest
+from agents.common import remove_runtime_home
 from agents.claude import CLAUDE_SUBMIT_SETTLE_SECONDS, ClaudeAgent
 from agents.codex import (
     CODEX_SUBMIT_SETTLE_MAX_SECONDS,
@@ -27,6 +28,31 @@ class FakeBridge:
 
     def keys(self, session: str, keys: list[str]) -> None:
         self.calls.append(("keys", session, list(keys)))
+
+
+def test_remove_runtime_home_unlinks_symlink_without_removing_target(tmp_path):
+    target = tmp_path / "actual-runtime"
+    target.mkdir()
+    sentinel = target / "sentinel.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    symlink = tmp_path / "runtime-link"
+    symlink.symlink_to(target, target_is_directory=True)
+
+    remove_runtime_home(symlink)
+
+    assert not symlink.exists()
+    assert target.exists()
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+def test_remove_runtime_home_does_not_unlink_regular_file(tmp_path):
+    file_path = tmp_path / "runtime-file"
+    file_path.write_text("keep", encoding="utf-8")
+
+    remove_runtime_home(file_path)
+
+    assert file_path.exists()
+    assert file_path.read_text(encoding="utf-8") == "keep"
 
 
 def test_supported_agents_include_codex_and_claude():
@@ -270,6 +296,38 @@ def test_ensure_managed_codex_home_preserves_state_files_needed_for_login(xdg_ru
     assert not (target / "history.jsonl").exists()
 
 
+def test_ensure_managed_codex_home_refreshes_login_state_for_existing_runtime(xdg_runtime, tmp_path, monkeypatch):
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", tmp_path / ".codex")
+    monkeypatch.setattr(backend.codex_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend.codex_agent_module, "DEFAULT_CODEX_SOURCE_HOME", tmp_path / ".codex")
+
+    source_home = tmp_path / ".codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text('model = "gpt-5"\n', encoding="utf-8")
+
+    target = Path(
+        backend.ensure_managed_codex_home(
+            "repo-codex-main",
+            cwd=tmp_path,
+            discord_channel_id=None,
+        )
+    )
+
+    (target / "state_5.sqlite").write_text("stale", encoding="utf-8")
+    (source_home / "state_5.sqlite").write_text("fresh", encoding="utf-8")
+    (source_home / "state_5.sqlite-wal").write_text("fresh-wal", encoding="utf-8")
+
+    backend.ensure_managed_codex_home(
+        "repo-codex-main",
+        cwd=tmp_path,
+        discord_channel_id=None,
+    )
+
+    assert (target / "state_5.sqlite").read_text(encoding="utf-8") == "fresh"
+    assert (target / "state_5.sqlite-wal").read_text(encoding="utf-8") == "fresh-wal"
+
+
 def test_ensure_managed_claude_home_preserves_existing_source_config(xdg_runtime, tmp_path, monkeypatch):
     monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
     monkeypatch.setattr(backend.claude_agent_module, "source_claude_config_path", lambda: tmp_path / ".claude.json")
@@ -386,7 +444,7 @@ def test_ensure_session_supports_claude_agent(xdg_runtime, tmp_path, monkeypatch
 
     assert pane_id == "%7"
     assert meta["agent"] == "claude"
-    assert meta["runtime_home"].endswith("demo-claude")
+    assert meta["runtime_home"] == str(backend.claude_agent_module.default_claude_home_path("demo-claude").resolve())
     assert meta["runtime_label"] == "Claude settings"
     assert meta["notify_binding"]["provider"] == "discord"
 
@@ -990,6 +1048,46 @@ def test_send_prompt_waits_for_managed_claude_prompt_ack(xdg_runtime, tmp_path, 
     assert captured["session"] == session
     assert captured["prompt"] == "hello"
     assert captured["turn_id"]
+
+
+def test_send_prompt_rolls_back_pending_turn_when_submit_fails(xdg_runtime, tmp_path, monkeypatch):
+    session = "demo-codex-failure"
+    backend.save_meta(
+        session,
+        {
+            "session": session,
+            "agent": "codex",
+            "launch_mode": "managed",
+            "pending_turn": {
+                "turn_id": "existing-turn",
+                "prompt": "existing prompt",
+            },
+        },
+    )
+    events: list[str] = []
+    actions: list[str] = []
+
+    class FailingPlugin:
+        name = "codex"
+
+        def submit_prompt(self, session: str, prompt: str, *, bridge) -> None:
+            raise RuntimeError("tmux send failed")
+
+    monkeypatch.setattr(backend, "get_agent", lambda agent: FailingPlugin())
+    monkeypatch.setattr(backend, "ensure_session", lambda *args, **kwargs: "%7")
+    monkeypatch.setattr(backend, "read_pane", lambda *args, **kwargs: "OpenAI Codex")
+    monkeypatch.setattr(backend, "touch_session_event", lambda session, source="": events.append(source))
+    monkeypatch.setattr(backend, "append_action_history", lambda *args, **kwargs: actions.append("prompt"))
+
+    with pytest.raises(RuntimeError, match="tmux send failed"):
+        backend.send_prompt(session, tmp_path, "codex", "hello")
+
+    meta = backend.load_meta(session)
+
+    assert meta["pending_turn"]["turn_id"] == "existing-turn"
+    assert meta["pending_turn"]["prompt"] == "existing prompt"
+    assert events == []
+    assert actions == []
 
 
 def test_codex_submit_prompt_skips_delay_for_empty_prompt(monkeypatch):

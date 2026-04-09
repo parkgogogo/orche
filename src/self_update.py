@@ -48,6 +48,10 @@ class InstallContext:
     executable_path: Path
 
 
+def _absolute_path(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path.expanduser())))
+
+
 def install_metadata_path() -> Path:
     return data_dir() / INSTALL_METADATA_FILE
 
@@ -109,11 +113,18 @@ def runtime_link_path() -> Optional[Path]:
     if argv0:
         candidate = Path(argv0).expanduser()
         if candidate.name == BIN_NAME:
-            return candidate if candidate.is_absolute() else candidate.resolve()
+            has_path_separator = any(separator and separator in argv0 for separator in (os.sep, os.altsep))
+            if candidate.is_absolute() or has_path_separator:
+                return _absolute_path(candidate)
+            resolved = shutil.which(argv0)
+            if resolved:
+                return _absolute_path(Path(resolved))
+            if candidate.exists():
+                return _absolute_path(candidate)
     if getattr(sys, "frozen", False):
         resolved = shutil.which(BIN_NAME)
         if resolved:
-            return Path(resolved).expanduser().resolve()
+            return _absolute_path(Path(resolved))
     return None
 
 
@@ -173,7 +184,7 @@ def infer_install_context(
         version=version,
         target=target,
         prefix=prefix,
-        link_path=link_path.resolve() if link_path.is_absolute() else link_path,
+        link_path=_absolute_path(link_path),
         install_root=install_root,
         executable_path=executable_path,
     )
@@ -195,7 +206,7 @@ def metadata_matches_context(metadata: Optional[dict[str, Any]], context: Instal
     if not link_path_value or not executable_value or not install_root_value or not prefix_value:
         return False
     try:
-        metadata_link_path = Path(link_path_value).expanduser().resolve()
+        metadata_link_path = _absolute_path(Path(link_path_value))
         metadata_executable_path = Path(executable_value).expanduser().resolve()
         metadata_install_root = Path(install_root_value).expanduser().resolve()
         metadata_prefix = Path(prefix_value).expanduser().resolve()

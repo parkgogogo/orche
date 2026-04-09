@@ -17,15 +17,16 @@ except ModuleNotFoundError:  # pragma: no cover
         tomllib = None
 
 from json_utils import JSONInputTooLargeError, read_json_file
-from paths import ensure_directories, locks_dir
+from paths import locks_dir
 
 from .base import AgentPlugin, AgentRuntime, BridgeIO
 from .common import (
     DEFAULT_RUNTIME_HOME_ROOT,
     ensure_orche_shim,
+    flock_path_lock,
     normalize_runtime_home,
     remove_runtime_home,
-    session_key,
+    session_storage_key,
     validate_discord_channel_id,
     write_notify_hook,
     write_text_atomically,
@@ -47,6 +48,7 @@ CODEX_SUBMIT_SECONDS_PER_CHAR = 0.01
 DEFAULT_CODEX_SOURCE_HOME = Path.home() / ".codex"
 MANAGED_CODEX_RUNTIME_DIRS = {".tmp", "log", "shell_snapshots", "tmp"}
 MANAGED_CODEX_RUNTIME_FILE_GLOBS = ("history.jsonl", "logs_*.sqlite*")
+MANAGED_CODEX_LOGIN_STATE_FILE_GLOBS = ("state*.sqlite*",)
 TOML_TABLE_HEADER_RE = re.compile(r"^\s*\[\[?.*\]\]?\s*$")
 TOML_NOTICE_HEADER_RE = re.compile(r"^\s*\[notice\]\s*$")
 TOML_FEATURES_HEADER_RE = re.compile(r"^\s*\[features\]\s*$")
@@ -61,7 +63,7 @@ SOURCE_CONFIG_BACKUP_SUFFIX = ".orche.bak"
 
 
 def default_codex_home_path(session: str) -> Path:
-    return DEFAULT_RUNTIME_HOME_ROOT / f"orche-codex-{session_key(session)}"
+    return DEFAULT_RUNTIME_HOME_ROOT / f"orche-codex-{session_storage_key(session)}"
 
 
 def default_notify_hook_path(codex_home: Path) -> Path:
@@ -469,25 +471,14 @@ def build_hooks_payload(
 
 @contextlib.contextmanager
 def source_config_lock(*, timeout: float = 5.0):
-    ensure_directories()
     path = locks_dir() / f"{SOURCE_CONFIG_LOCK_NAME}.lock"
-    deadline = time.time() + timeout
-    while True:
-        try:
-            fd = path.open("x")
-            break
-        except FileExistsError:
-            if time.time() > deadline:
-                raise RuntimeError("Timed out waiting for Codex source config lock")
-            time.sleep(0.1)
-    try:
-        fd.write(str(Path.cwd()))
-        fd.flush()
+    with flock_path_lock(
+        path,
+        timeout=timeout,
+        error_message="Timed out waiting for Codex source config lock",
+        details=str(Path.cwd()),
+    ):
         yield
-    finally:
-        fd.close()
-        with contextlib.suppress(FileNotFoundError):
-            path.unlink()
 
 
 def sync_trust_to_source_config(cwd: Path) -> str:
@@ -514,6 +505,17 @@ def prune_managed_codex_home(codex_home: Path) -> None:
         for path in codex_home.glob(pattern):
             with contextlib.suppress(OSError):
                 path.unlink()
+
+
+def refresh_managed_codex_login_state(source_home: Path, codex_home: Path) -> None:
+    if not source_home.exists():
+        return
+    codex_home.mkdir(parents=True, exist_ok=True)
+    for pattern in MANAGED_CODEX_LOGIN_STATE_FILE_GLOBS:
+        for source_path in source_home.glob(pattern):
+            if not source_path.is_file():
+                continue
+            shutil.copy2(source_path, codex_home / source_path.name)
 
 
 def rewrite_codex_config(
@@ -566,6 +568,8 @@ class CodexAgent(AgentPlugin):
                 shutil.copytree(DEFAULT_CODEX_SOURCE_HOME, target)
             else:
                 target.mkdir(parents=True, exist_ok=True)
+        else:
+            refresh_managed_codex_login_state(DEFAULT_CODEX_SOURCE_HOME, target)
         prune_managed_codex_home(target)
         write_notify_hook(default_notify_hook_path(target))
         rewrite_codex_config(target, session=session, cwd=cwd, discord_channel_id=discord_channel_id)
