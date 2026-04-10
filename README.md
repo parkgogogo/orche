@@ -216,8 +216,8 @@ orche config reset claude.command
 ## Roadmap
 
 - [x] Support Discord notifications
-- [ ] Support Telegram notifications
-- [ ] Support more agents
+- [x] Support Telegram notifications
+- [ ] Support more agents, like pi
 - [ ] Support codex as an independent subagent form, with independent skills / mcp, etc., specializing agent capabilities
 
 Because both `notify` and `agent` are designed as plugins, you can also develop your own. Check out:
