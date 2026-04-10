@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import importlib
 import os
 import re
 import shlex
@@ -10,7 +11,12 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from paths import bridges_dir, ensure_directories
+if __package__ and "." in __package__:
+    _paths = importlib.import_module("..paths", __package__)
+    bridges_dir = _paths.bridges_dir
+    ensure_directories = _paths.ensure_directories
+else:
+    from paths import bridges_dir, ensure_directories
 
 
 DEFAULT_RUNTIME_HOME_ROOT = Path(tempfile.gettempdir())

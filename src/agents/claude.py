@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import contextlib
+import importlib
 import json
 import re
 import shlex
 import time
 from pathlib import Path
 
-from json_utils import JSONInputTooLargeError, read_json_file
-from paths import ensure_directories, locks_dir
+if __package__ and "." in __package__:
+    _json_utils = importlib.import_module("..json_utils", __package__)
+    JSONInputTooLargeError = _json_utils.JSONInputTooLargeError
+    read_json_file = _json_utils.read_json_file
+    _paths = importlib.import_module("..paths", __package__)
+    ensure_directories = _paths.ensure_directories
+    locks_dir = _paths.locks_dir
+else:
+    from json_utils import JSONInputTooLargeError, read_json_file
+    from paths import ensure_directories, locks_dir
 
 from .base import AgentPlugin, AgentRuntime, BridgeIO
 from .common import (

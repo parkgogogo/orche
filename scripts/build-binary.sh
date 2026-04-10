@@ -30,6 +30,7 @@ rm -rf build-nuitka dist
   --include-package=notify \
   --include-package=rich._unicode_data \
   --include-module=backend \
+  --include-module=json_utils \
   --include-module=paths \
   --include-module=self_update \
   --include-module=tls \
