@@ -62,7 +62,7 @@ $XDG_DATA_HOME/orche/
   Set the Discord webhook URL used for webhook delivery.
 
 - `managed.ttl-seconds`
-  Set the managed-session idle TTL in seconds. Default is `3600`; `<= 0` disables TTL expiry.
+  Set the managed-session idle TTL in seconds. Default is `43200`; `<= 0` disables TTL expiry.
 
 - `notify.enabled`
   Enable or disable notify delivery globally.

@@ -53,7 +53,7 @@ LATEST_TURN_SUMMARY_RETRY_INTERVAL = 0.25
 WATCHDOG_NOTIFY_BUFFER = 10.0
 TMUX_PANE_OUTPUT_SEPARATOR = "@@ORCHE_PANE@@"
 LAUNCH_ERROR_PREFIX = "orche launch error:"
-DEFAULT_MANAGED_SESSION_TTL_SECONDS = 3600
+DEFAULT_MANAGED_SESSION_TTL_SECONDS = 43200
 CONFIG_COMMENT = (
     "orche runtime config. session is the active orche agent session label; "
     "discord_session is the Discord/OpenClaw session key used for notify routing."

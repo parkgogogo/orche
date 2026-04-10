@@ -185,7 +185,7 @@ orche config set discord.bot-token "$BOT_TOKEN"
 orche config set discord.mention-user-id 123456789012345678
 orche config set discord.webhook-url "$WEBHOOK_URL"
 
-# Adjust managed session idle TTL (default 3600s, <=0 disables expiry)
+# Adjust managed session idle TTL (default 43200s, <=0 disables expiry)
 orche config set managed.ttl-seconds 1800
 
 # Enable or disable notify delivery globally
