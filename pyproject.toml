@@ -25,7 +25,7 @@ orche = "cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["backend", "cli", "notify_hook", "paths", "self_update", "tls", "version"]
+py-modules = ["backend", "cli", "json_utils", "notify_hook", "paths", "self_update", "tls", "version"]
 packages = ["notify", "agents"]
 
 [tool.setuptools.dynamic]
