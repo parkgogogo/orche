@@ -1158,7 +1158,7 @@ def test_build_status_includes_lifecycle_metadata(xdg_runtime, monkeypatch):
             "pane_id": "%1",
             "launch_mode": "managed",
             "last_event_at": now,
-            "expires_after_seconds": 3600,
+            "expires_after_seconds": backend.DEFAULT_MANAGED_SESSION_TTL_SECONDS,
         },
     )
     backend.save_meta(
@@ -1171,7 +1171,7 @@ def test_build_status_includes_lifecycle_metadata(xdg_runtime, monkeypatch):
             "launch_mode": "managed",
             "parent_session": "parent",
             "last_event_at": now - 30,
-            "expires_after_seconds": 3600,
+            "expires_after_seconds": backend.DEFAULT_MANAGED_SESSION_TTL_SECONDS,
         },
     )
     monkeypatch.setattr(backend, "bridge_resolve", lambda session: {"parent": "%1", "child": "%2"}.get(session, ""))
@@ -1187,7 +1187,7 @@ def test_build_status_includes_lifecycle_metadata(xdg_runtime, monkeypatch):
 
     assert status["parent_session"] == "parent"
     assert status["child_count"] == 0
-    assert status["ttl_seconds"] == 3600
+    assert status["ttl_seconds"] == backend.DEFAULT_MANAGED_SESSION_TTL_SECONDS
     assert status["ttl_exempt_because_parent_alive"] is True
     assert status["last_event_at"] == now - 30
 

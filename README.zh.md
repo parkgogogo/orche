@@ -185,7 +185,7 @@ orche config set discord.bot-token "$BOT_TOKEN"
 orche config set discord.mention-user-id 123456789012345678
 orche config set discord.webhook-url "$WEBHOOK_URL"
 
-# 调整 managed session 空闲 TTL（默认 3600 秒，<=0 表示禁用过期回收）
+# 调整 managed session 空闲 TTL（默认 43200 秒，<=0 表示禁用过期回收）
 orche config set managed.ttl-seconds 1800
 
 # 全局启用或禁用 notify 投递
