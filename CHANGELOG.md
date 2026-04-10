@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.66 - 2026-04-10
+
+- Switch managed Codex runtime setup to a whitelist-based home builder that copies only approved files and directories from `~/.codex`, and rebuilds managed `hooks.json` from the source home.
+- Remove excluded runtime artifacts (logs, caches, sessions, locks) from managed Codex homes during setup.
+- Add regression coverage for required-file copying, excluded-file removal, and repeated-setup hooks refresh.
+
 ## v0.4.65 - 2026-04-10
 
 - Add a Telegram notify provider so `orche` sessions can deliver notifications through Telegram in addition to the existing routes.
