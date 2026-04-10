@@ -122,6 +122,10 @@ orche prompt repo-worker "refactor the auth module"
 
 ### 2. OpenClaw Supervision Loop
 
+When using OpenClaw, the configured model may not handle long-running tasks as well as Codex or Claude, especially for coding work. OpenClaw's built-in `acpx` also has many practical issues. A pragmatic approach is to use `orche` to let OpenClaw create Codex or Claude sessions and delegate tasks to them; when the work is done, Codex feeds the result back into the group chat, forming a closed loop.
+
+> This setup requires creating a separate Discord Bot for Codex and configuring it correctly with `orche config`. See [Configuration](#configuration) for details.
+
 When OpenClaw is supervising the worker and the loop should close back into Discord:
 
 ```bash
@@ -138,9 +142,9 @@ orche prompt repo-worker "analyze the failing tests"
 
 OpenClaw opens the worker, the worker runs in tmux with durable state, and completion events route back through Discord so the supervisor can decide what happens next.
 
-### 3. Extending with Skills
+### 3. Install SKILL (Recommended)
 
-`orche` supports skills to extend agent capabilities. A skill is a set of instructions placed in the agent's skills directory.
+Installing SKILL correctly for your agent can help them quickly learn how to use `orche`.
 
 For example, to install the `orche` skill from this repository for Codex:
 
@@ -202,9 +206,10 @@ orche config reset claude.command
 
 ## Roadmap
 
-- [ ] Support more code agents
-- [ ] Support more notify providers
-- [ ] Plugin-based agent & notify architecture
+- [x] Support Discord notifications
+- [ ] Support Telegram notifications
+- [ ] Support more agents
+- [ ] Support codex as an independent subagent form, with independent skills / mcp, etc., specializing agent capabilities
 
 Because both `notify` and `agent` are designed as plugins, you can also develop your own. Check out:
 
