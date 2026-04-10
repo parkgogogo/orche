@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.67 - 2026-04-10
+
+- Fix `orche open --prompt` so it reuses the pane created during open instead of re-entering `ensure_session()`, eliminating the race that could produce `Error: unknown pane: %42`.
+- Harden pane naming by making `bridge_name_pane()` the single tmux rename call and removing the extra `pane_exists()` preflight, closing the TOCTOU race window.
+- Add regression coverage for prompt pane reuse and single-round-trip pane naming.
+
 ## v0.4.66 - 2026-04-10
 
 - Switch managed Codex runtime setup to a whitelist-based home builder that copies only approved files and directories from `~/.codex`, and rebuilds managed `hooks.json` from the source home.
