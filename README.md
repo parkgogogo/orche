@@ -97,7 +97,15 @@ There are also a few helper commands for advanced control:
 
 ## Usage Scenarios
 
-### 1. Codex / Claude Multi-Agent Loop
+### 1. Codex and Claude Say Hello
+
+This is the simplest `orche` demo: a Codex agent and a Claude agent greet each other through a tmux-backed handoff, showing the basic loop in the smallest possible form.
+
+[Watch the hello demo video](./assets/hello.mp4)
+
+<video src="./assets/hello.mp4" controls preload="metadata" width="100%"></video>
+
+### 2. Codex / Claude Multi-Agent Loop
 
 Use `orche` when you want agents to collaborate inside tmux. For example, let Claude review while Codex writes code:
 
@@ -129,7 +137,7 @@ orche prompt repo-worker "refactor the auth module"
 
 *The image above shows a Codex supervisor using 2 Codex and 2 Claude agents to simultaneously perform code review.*
 
-### 2. OpenClaw Supervision Loop
+### 3. OpenClaw Supervision Loop
 
 When using OpenClaw, the configured model may not handle long-running tasks as well as Codex or Claude, especially for coding work. OpenClaw's built-in `acpx` also has many practical issues. A pragmatic approach is to use `orche` to let OpenClaw create Codex or Claude sessions and delegate tasks to them; when the work is done, Codex feeds the result back into the group chat, forming a closed loop.
 
@@ -151,7 +159,7 @@ orche prompt repo-worker "analyze the failing tests"
 
 OpenClaw opens the worker, the worker runs in tmux with durable state, and completion events route back through Discord so the supervisor can decide what happens next.
 
-### 3. Install SKILL (Recommended)
+### 4. Install SKILL (Recommended)
 
 Installing SKILL correctly for your agent can help them quickly learn how to use `orche`.
 
