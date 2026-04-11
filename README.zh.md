@@ -101,9 +101,7 @@ orche --help
 
 这是最简单的 `orche` 演示：一个 Codex agent 和一个 Claude agent 通过 tmux 承载的委派闭环互相打招呼，用最小形式展示基础协作流程。
 
-[观看 hello 演示视频](./assets/hello.mp4)
-
-<video src="./assets/hello.mp4" controls preload="metadata" width="100%"></video>
+![Codex and Claude Say Hello](./assets/Ghostty.gif)
 
 ### 2. Codex / Claude 多 Agent 协作
 
