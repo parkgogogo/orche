@@ -101,8 +101,6 @@ There are also a few helper commands for advanced control:
 
 This is the simplest `orche` demo: a Codex agent and a Claude agent greet each other through a tmux-backed handoff, showing the basic loop in the smallest possible form.
 
-[Watch the hello demo video](./assets/hello.mp4)
-
 <video src="./assets/hello.mp4" controls preload="metadata" width="100%"></video>
 
 ### 2. Codex / Claude Multi-Agent Loop
