@@ -1,16 +1,34 @@
 from __future__ import annotations
 
-import re
 import shlex
 import time
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
-from .runtime import DEFAULT_CODEX_SOURCE_HOME, default_codex_home_path, default_notify_hook_path, materialize_managed_codex_home, rewrite_codex_config
 from ..base import AgentConfig, AgentPlugin, AgentRuntime, BridgeIO
-from ..common import DEFAULT_RUNTIME_HOME_ROOT, ensure_orche_shim, normalize_runtime_home, remove_runtime_home
+from ..common import (
+    DEFAULT_RUNTIME_HOME_ROOT,
+    ensure_orche_shim,
+    normalize_runtime_home,
+    remove_runtime_home,
+)
+from .runtime import (
+    DEFAULT_CODEX_SOURCE_HOME,
+    default_codex_home_path,
+    default_notify_hook_path,
+    materialize_managed_codex_home,
+    rewrite_codex_config,
+)
 
-
-READY_SURFACE_HINTS = ("OpenAI Codex", "Approvals:", "model:", "full-auto", "dangerously-bypass-approvals-and-sandbox", "Esc to interrupt", "Ctrl-C to interrupt")
+READY_SURFACE_HINTS = (
+    "OpenAI Codex",
+    "Approvals:",
+    "model:",
+    "full-auto",
+    "dangerously-bypass-approvals-and-sandbox",
+    "Esc to interrupt",
+    "Ctrl-C to interrupt",
+)
 CODEX_SUBMIT_SETTLE_MIN_SECONDS = 0.5
 CODEX_SUBMIT_SETTLE_MAX_SECONDS = 1.5
 CODEX_SUBMIT_SECONDS_PER_CHAR = 0.01
@@ -20,7 +38,9 @@ def codex_submit_settle_seconds(prompt: str) -> float:
     if not prompt:
         return 0.0
     scaled = len(prompt) * CODEX_SUBMIT_SECONDS_PER_CHAR
-    return max(CODEX_SUBMIT_SETTLE_MIN_SECONDS, min(CODEX_SUBMIT_SETTLE_MAX_SECONDS, scaled))
+    return max(
+        CODEX_SUBMIT_SETTLE_MIN_SECONDS, min(CODEX_SUBMIT_SETTLE_MAX_SECONDS, scaled)
+    )
 
 
 def _compact_prompt_text(value: str) -> str:
@@ -38,7 +58,11 @@ def _is_codex_status_line(line: str) -> bool:
 
 def _is_codex_prompt_continuation(line: str) -> bool:
     stripped = line.strip()
-    return bool(stripped) and not stripped.startswith(("› ", "• ", "⚠ ", "╭", "╰", "│", "└")) and not _is_codex_status_line(stripped)
+    return (
+        bool(stripped)
+        and not stripped.startswith(("› ", "• ", "⚠ ", "╭", "╰", "│", "└"))
+        and not _is_codex_status_line(stripped)
+    )
 
 
 def _find_codex_prompt_block(lines: list[str], prompt: str) -> tuple[int, int] | None:
@@ -57,7 +81,9 @@ def _find_codex_prompt_block(lines: list[str], prompt: str) -> tuple[int, int] |
             end_index = cursor
             cursor += 1
         rendered_prompt = _compact_prompt_text(" ".join(parts))
-        if rendered_prompt and (rendered_prompt in prompt_inline or prompt_inline in rendered_prompt):
+        if rendered_prompt and (
+            rendered_prompt in prompt_inline or prompt_inline in rendered_prompt
+        ):
             return index, end_index
     return None
 
@@ -71,12 +97,20 @@ def _find_next_codex_prompt(lines: list[str], start_index: int) -> int | None:
 
 def _is_codex_transient_output(line: str) -> bool:
     compact = _compact_prompt_text(line).lower()
-    return not compact or "esc to interrupt" in compact or compact.startswith(("working ", "working("))
+    return (
+        not compact
+        or "esc to interrupt" in compact
+        or compact.startswith(("working ", "working("))
+    )
 
 
 def _is_codex_output_continuation(line: str) -> bool:
     stripped = line.strip()
-    return bool(stripped) and not stripped.startswith(("› ", "• ", "⚠ ", "╭", "╰", "│", "└")) and not _is_codex_status_line(stripped)
+    return (
+        bool(stripped)
+        and not stripped.startswith(("› ", "• ", "⚠ ", "╭", "╰", "│", "└"))
+        and not _is_codex_status_line(stripped)
+    )
 
 
 def _extract_codex_completion_summary(capture: str, prompt: str) -> str:
@@ -131,19 +165,39 @@ class CodexAgent(AgentPlugin):
         super().__init__(config=config)
         runtime_home_root = self._config.get("runtime_home_root")
         source_home = self._config.get("source_home")
-        self._runtime_home_root = Path(runtime_home_root or DEFAULT_RUNTIME_HOME_ROOT).expanduser()
+        self._runtime_home_root = Path(
+            runtime_home_root or DEFAULT_RUNTIME_HOME_ROOT
+        ).expanduser()
         self._source_home = Path(source_home or DEFAULT_CODEX_SOURCE_HOME).expanduser()
 
-    def ensure_managed_runtime(self, session: str, *, cwd: Path, discord_channel_id: str | None) -> AgentRuntime:
+    def ensure_managed_runtime(
+        self, session: str, *, cwd: Path, discord_channel_id: str | None
+    ) -> AgentRuntime:
         target = default_codex_home_path(session, self._runtime_home_root)
         materialize_managed_codex_home(self._source_home, target)
         from ..common import write_notify_hook
 
         write_notify_hook(default_notify_hook_path(target))
-        rewrite_codex_config(target, session=session, cwd=cwd, discord_channel_id=discord_channel_id, source_home=self._source_home)
-        return AgentRuntime(home=str(target.resolve()), managed=True, label=self.runtime_label)
+        rewrite_codex_config(
+            target,
+            session=session,
+            cwd=cwd,
+            discord_channel_id=discord_channel_id,
+            source_home=self._source_home,
+        )
+        return AgentRuntime(
+            home=str(target.resolve()), managed=True, label=self.runtime_label
+        )
 
-    def build_launch_command(self, *, cwd: Path, runtime: AgentRuntime, session: str, discord_channel_id: str | None, approve_all: bool) -> str:
+    def build_launch_command(
+        self,
+        *,
+        cwd: Path,
+        runtime: AgentRuntime,
+        session: str,
+        discord_channel_id: str | None,
+        approve_all: bool,
+    ) -> str:
         _ = approve_all
         prefix = [f"cd {shlex.quote(str(cwd))}"]
         orche_shim = ensure_orche_shim()
@@ -158,12 +212,22 @@ class CodexAgent(AgentPlugin):
         if discord_channel_id:
             from ..common import validate_discord_channel_id
 
-            prefix.append(f"export ORCHE_DISCORD_CHANNEL_ID={shlex.quote(validate_discord_channel_id(discord_channel_id))}")
-        command = ["codex", "--enable", "codex_hooks", "--no-alt-screen", "-C", str(cwd), "--dangerously-bypass-approvals-and-sandbox"]
+            prefix.append(
+                f"export ORCHE_DISCORD_CHANNEL_ID={shlex.quote(validate_discord_channel_id(discord_channel_id))}"
+            )
+        command = [
+            "codex",
+            "--enable",
+            "codex_hooks",
+            "--no-alt-screen",
+            "-C",
+            str(cwd),
+            "--dangerously-bypass-approvals-and-sandbox",
+        ]
         prefix.append(f"exec {' '.join(shlex.quote(part) for part in command)}")
         return " && ".join(prefix)
 
-    def native_launch_args(self, *, cwd: Path, cli_args: list[str] | tuple[str, ...]) -> list[str]:
+    def native_launch_args(self, *, cwd: Path, cli_args: Sequence[str]) -> list[str]:
         args = [str(value) for value in cli_args]
         command: list[str] = []
         if "--no-alt-screen" not in args:
@@ -175,15 +239,24 @@ class CodexAgent(AgentPlugin):
         command.extend(args)
         return command
 
-    def matches_process(self, pane_command: str, descendant_commands: list[str]) -> bool:
+    def matches_process(
+        self, pane_command: str, descendant_commands: Iterable[str]
+    ) -> bool:
         if pane_command == "codex":
             return True
-        return any("codex" in proc.lower() or "@openai/codex" in proc.lower() for proc in descendant_commands)
+        return any(
+            "codex" in proc.lower() or "@openai/codex" in proc.lower()
+            for proc in descendant_commands
+        )
 
     def capture_has_ready_surface(self, capture: str, cwd: Path) -> bool:
         lowered = capture.lower()
-        has_brand = "openai codex" in lowered or "\ncodex" in lowered or " codex" in lowered
-        has_context = str(cwd) in capture or any(hint.lower() in lowered for hint in READY_SURFACE_HINTS)
+        has_brand = (
+            "openai codex" in lowered or "\ncodex" in lowered or " codex" in lowered
+        )
+        has_context = str(cwd) in capture or any(
+            hint.lower() in lowered for hint in READY_SURFACE_HINTS
+        )
         return has_brand and has_context
 
     def submit_prompt(self, session: str, prompt: str, *, bridge: BridgeIO) -> None:

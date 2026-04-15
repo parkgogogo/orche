@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import subprocess
 import uuid
-from typing import Iterable, Optional, Sequence, Union
+from collections.abc import Iterable, Sequence
+from typing import Optional, Union
 
 from tmux.client import tmux
 from tmux.query import list_panes, pane_exists, read_pane
@@ -27,8 +28,12 @@ def tmux_bridge(
     capture: bool = True,
     fallback_pane_id: str = "",
 ) -> subprocess.CompletedProcess[str]:
-    def bridge_result(returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(["tmux-bridge", *args], returncode, stdout=stdout, stderr=stderr)
+    def bridge_result(
+        returncode: int = 0, stdout: str = "", stderr: str = ""
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            ["tmux-bridge", *args], returncode, stdout=stdout, stderr=stderr
+        )
 
     try:
         if not args:
@@ -39,17 +44,37 @@ def tmux_bridge(
             tmux("select-pane", "-t", pane_id, "-T", session, check=True, capture=True)
             result = bridge_result()
         elif command == "resolve":
-            result = bridge_result(stdout=_resolve_bridge_pane(args[1], fallback_pane_id))
+            result = bridge_result(
+                stdout=_resolve_bridge_pane(args[1], fallback_pane_id)
+            )
         elif command == "read":
             session, lines = args[1], max(int(args[2]), 1)
-            result = bridge_result(stdout=read_pane(_resolve_bridge_pane(session, fallback_pane_id), lines))
+            result = bridge_result(
+                stdout=read_pane(_resolve_bridge_pane(session, fallback_pane_id), lines)
+            )
         elif command == "type":
             session, text = args[1], args[2]
             pane_id = _resolve_bridge_pane(session, fallback_pane_id)
             buffer_name = f"orche-{uuid.uuid4().hex}"
             try:
-                tmux("load-buffer", "-b", buffer_name, "-", check=True, capture=True, input_text=text)
-                tmux("paste-buffer", "-t", pane_id, "-b", buffer_name, check=True, capture=True)
+                tmux(
+                    "load-buffer",
+                    "-b",
+                    buffer_name,
+                    "-",
+                    check=True,
+                    capture=True,
+                    input_text=text,
+                )
+                tmux(
+                    "paste-buffer",
+                    "-t",
+                    pane_id,
+                    "-b",
+                    buffer_name,
+                    check=True,
+                    capture=True,
+                )
             finally:
                 tmux("delete-buffer", "-b", buffer_name, check=False, capture=True)
             result = bridge_result()
@@ -76,25 +101,64 @@ def bridge_name_pane(pane_id: str, session: str) -> None:
 
 
 def bridge_resolve(session: str, *, fallback_pane_id: str = "") -> Optional[str]:
-    result = tmux_bridge("resolve", session, check=False, capture=True, fallback_pane_id=fallback_pane_id)
+    result = tmux_bridge(
+        "resolve", session, check=False, capture=True, fallback_pane_id=fallback_pane_id
+    )
     return result.stdout.strip() or None if result.returncode == 0 else None
 
 
 def bridge_read(session: str, lines: int = 200, *, fallback_pane_id: str = "") -> str:
-    return tmux_bridge("read", session, str(lines), check=True, capture=True, fallback_pane_id=fallback_pane_id).stdout.rstrip("\n")
+    return tmux_bridge(
+        "read",
+        session,
+        str(lines),
+        check=True,
+        capture=True,
+        fallback_pane_id=fallback_pane_id,
+    ).stdout.rstrip("\n")
 
 
 def bridge_type(session: str, text: str, *, fallback_pane_id: str = "") -> None:
     if text:
-        tmux_bridge("read", session, "1", check=True, capture=True, fallback_pane_id=fallback_pane_id)
-        tmux_bridge("type", session, text, check=True, capture=True, fallback_pane_id=fallback_pane_id)
+        tmux_bridge(
+            "read",
+            session,
+            "1",
+            check=True,
+            capture=True,
+            fallback_pane_id=fallback_pane_id,
+        )
+        tmux_bridge(
+            "type",
+            session,
+            text,
+            check=True,
+            capture=True,
+            fallback_pane_id=fallback_pane_id,
+        )
 
 
-def bridge_keys(session: str, keys: Union[Iterable[str], str], *, fallback_pane_id: str = "") -> None:
+def bridge_keys(
+    session: str, keys: Union[Iterable[str], str], *, fallback_pane_id: str = ""
+) -> None:
     values = [keys] if isinstance(keys, str) else list(keys)
     if values:
-        tmux_bridge("read", session, "1", check=True, capture=True, fallback_pane_id=fallback_pane_id)
-        tmux_bridge("keys", session, *values, check=True, capture=True, fallback_pane_id=fallback_pane_id)
+        tmux_bridge(
+            "read",
+            session,
+            "1",
+            check=True,
+            capture=True,
+            fallback_pane_id=fallback_pane_id,
+        )
+        tmux_bridge(
+            "keys",
+            session,
+            *values,
+            check=True,
+            capture=True,
+            fallback_pane_id=fallback_pane_id,
+        )
 
 
 class _BridgeAdapter:

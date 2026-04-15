@@ -6,6 +6,7 @@ import json
 import re
 import shlex
 import time
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 if __package__ and "." in __package__:
@@ -30,7 +31,6 @@ from .common import (
     write_notify_hook,
     write_text_atomically,
 )
-
 
 READY_SURFACE_HINTS = (
     "Claude Code",
@@ -77,7 +77,9 @@ def _find_claude_prompt_block(lines: list[str], prompt: str) -> tuple[int, int] 
             end_index = cursor
             cursor += 1
         rendered_prompt = _compact_prompt_text(" ".join(parts))
-        if rendered_prompt and (rendered_prompt in prompt_inline or prompt_inline in rendered_prompt):
+        if rendered_prompt and (
+            rendered_prompt in prompt_inline or prompt_inline in rendered_prompt
+        ):
             return index, end_index
     return None
 
@@ -116,7 +118,9 @@ def _extract_claude_completion_summary(capture: str, prompt: str) -> str:
         current_block.append(stripped)
     if current_block:
         summaries.append(_compact_prompt_text(" ".join(current_block)))
-    cleaned = [summary for summary in summaries if summary and not re.match(r"^⏵⏵\s+", summary)]
+    cleaned = [
+        summary for summary in summaries if summary and not re.match(r"^⏵⏵\s+", summary)
+    ]
     return cleaned[-1] if cleaned else ""
 
 
@@ -128,7 +132,9 @@ def _find_next_claude_prompt(lines: list[str], start_index: int) -> int | None:
     return None
 
 
-def default_claude_home_path(session: str, runtime_home_root: Path | None = None) -> Path:
+def default_claude_home_path(
+    session: str, runtime_home_root: Path | None = None
+) -> Path:
     root = Path(runtime_home_root or DEFAULT_RUNTIME_HOME_ROOT)
     return root / f"orche-claude-{session_key(session)}"
 
@@ -161,7 +167,9 @@ def source_claude_config_path(config_path: Path | None = None) -> Path:
 
 def source_claude_config_backup_path(config_path: Path | None = None) -> Path:
     resolved_config_path = source_claude_config_path(config_path)
-    return resolved_config_path.with_name(resolved_config_path.name + SOURCE_CONFIG_BACKUP_SUFFIX)
+    return resolved_config_path.with_name(
+        resolved_config_path.name + SOURCE_CONFIG_BACKUP_SUFFIX
+    )
 
 
 def source_claude_home_path(home_path: Path | None = None) -> Path:
@@ -203,11 +211,15 @@ def _read_json_object(path: Path) -> dict[str, object]:
     except (json.JSONDecodeError, JSONInputTooLargeError) as exc:
         raise RuntimeError(f"Refusing to write invalid JSON for {path}: {exc}") from exc
     if not isinstance(payload, dict):
-        raise RuntimeError(f"Refusing to rewrite non-object Claude source config at {path}")
+        raise RuntimeError(
+            f"Refusing to rewrite non-object Claude source config at {path}"
+        )
     return payload
 
 
-def sync_trust_to_source_config(cwd: Path, *, config_path: Path | None = None) -> dict[str, object]:
+def sync_trust_to_source_config(
+    cwd: Path, *, config_path: Path | None = None
+) -> dict[str, object]:
     resolved_config_path = source_claude_config_path(config_path)
     target = str(cwd.resolve())
     with source_config_lock():
@@ -218,14 +230,18 @@ def sync_trust_to_source_config(cwd: Path, *, config_path: Path | None = None) -
         elif isinstance(projects, dict):
             projects_dict = dict(projects)
         else:
-            raise RuntimeError(f"Refusing to rewrite invalid Claude projects config at {resolved_config_path}")
+            raise RuntimeError(
+                f"Refusing to rewrite invalid Claude projects config at {resolved_config_path}"
+            )
         project_entry = projects_dict.get(target)
         if project_entry is None:
             project_payload: dict[str, object] = {}
         elif isinstance(project_entry, dict):
             project_payload = dict(project_entry)
         else:
-            raise RuntimeError(f"Refusing to rewrite invalid Claude project entry for {target}")
+            raise RuntimeError(
+                f"Refusing to rewrite invalid Claude project entry for {target}"
+            )
         if project_payload.get("hasTrustDialogAccepted") is True:
             return original
         project_payload["hasTrustDialogAccepted"] = True
@@ -282,7 +298,12 @@ def build_settings_payload(
             status="warning",
         ),
     }
-    session_start_entries = list(hooks.get("SessionStart")) if isinstance(hooks.get("SessionStart"), list) else []
+    raw_session_start_entries = hooks.get("SessionStart")
+    session_start_entries = (
+        list(raw_session_start_entries)
+        if isinstance(raw_session_start_entries, list)
+        else []
+    )
     session_start_entries.append(
         {
             "matcher": "startup",
@@ -290,20 +311,32 @@ def build_settings_payload(
         }
     )
     hooks["SessionStart"] = session_start_entries
+    raw_prompt_submit_entries = hooks.get("UserPromptSubmit")
     prompt_submit_entries = (
-        list(hooks.get("UserPromptSubmit")) if isinstance(hooks.get("UserPromptSubmit"), list) else []
+        list(raw_prompt_submit_entries)
+        if isinstance(raw_prompt_submit_entries, list)
+        else []
     )
     prompt_submit_entries.append({"hooks": [command_hook]})
     hooks["UserPromptSubmit"] = prompt_submit_entries
-    notification_entries = list(hooks.get("Notification")) if isinstance(hooks.get("Notification"), list) else []
+    raw_notification_entries = hooks.get("Notification")
+    notification_entries = (
+        list(raw_notification_entries)
+        if isinstance(raw_notification_entries, list)
+        else []
+    )
     notification_entries.append({"hooks": [warning_hook]})
     hooks["Notification"] = notification_entries
+    raw_permission_request_entries = hooks.get("PermissionRequest")
     permission_request_entries = (
-        list(hooks.get("PermissionRequest")) if isinstance(hooks.get("PermissionRequest"), list) else []
+        list(raw_permission_request_entries)
+        if isinstance(raw_permission_request_entries, list)
+        else []
     )
     permission_request_entries.append({"hooks": [warning_hook]})
     hooks["PermissionRequest"] = permission_request_entries
-    stop_entries = list(hooks.get("Stop")) if isinstance(hooks.get("Stop"), list) else []
+    raw_stop_entries = hooks.get("Stop")
+    stop_entries = list(raw_stop_entries) if isinstance(raw_stop_entries, list) else []
     stop_entries.append(
         {
             "hooks": [
@@ -335,10 +368,19 @@ class ClaudeAgent(AgentPlugin):
         claude_command = self._config.get("claude_command")
         claude_home_path = self._config.get("claude_home_path")
         claude_config_path = self._config.get("claude_config_path")
-        self._runtime_home_root = Path(runtime_home_root or DEFAULT_RUNTIME_HOME_ROOT).expanduser()
-        self._claude_command = str(claude_command or DEFAULT_CLAUDE_COMMAND).strip() or DEFAULT_CLAUDE_COMMAND
-        self._source_home_path = Path(claude_home_path or DEFAULT_CLAUDE_SOURCE_HOME).expanduser()
-        self._source_config_path = Path(claude_config_path or DEFAULT_CLAUDE_SOURCE_CONFIG_PATH).expanduser()
+        self._runtime_home_root = Path(
+            runtime_home_root or DEFAULT_RUNTIME_HOME_ROOT
+        ).expanduser()
+        self._claude_command = (
+            str(claude_command or DEFAULT_CLAUDE_COMMAND).strip()
+            or DEFAULT_CLAUDE_COMMAND
+        )
+        self._source_home_path = Path(
+            claude_home_path or DEFAULT_CLAUDE_SOURCE_HOME
+        ).expanduser()
+        self._source_config_path = Path(
+            claude_config_path or DEFAULT_CLAUDE_SOURCE_CONFIG_PATH
+        ).expanduser()
 
     def ensure_managed_runtime(
         self,
@@ -356,14 +398,20 @@ class ClaudeAgent(AgentPlugin):
             target,
             session=session,
             discord_channel_id=discord_channel_id,
-            source_payload=_read_json_object(source_settings_path(self._source_home_path)),
+            source_payload=_read_json_object(
+                source_settings_path(self._source_home_path)
+            ),
         )
-        serialized_settings = json.dumps(settings_payload, indent=2, ensure_ascii=False) + "\n"
+        serialized_settings = (
+            json.dumps(settings_payload, indent=2, ensure_ascii=False) + "\n"
+        )
         write_text_atomically(
             runtime_settings_path,
             serialized_settings,
         )
-        return AgentRuntime(home=str(target.resolve()), managed=True, label=self.runtime_label)
+        return AgentRuntime(
+            home=str(target.resolve()), managed=True, label=self.runtime_label
+        )
 
     def submit_prompt(self, session: str, prompt: str, *, bridge: BridgeIO) -> None:
         if prompt:
@@ -391,7 +439,9 @@ class ClaudeAgent(AgentPlugin):
         if session:
             prefix.append(f"export ORCHE_SESSION={shlex.quote(session)}")
         if discord_channel_id:
-            prefix.append(f"export ORCHE_DISCORD_CHANNEL_ID={shlex.quote(validate_discord_channel_id(discord_channel_id))}")
+            prefix.append(
+                f"export ORCHE_DISCORD_CHANNEL_ID={shlex.quote(validate_discord_channel_id(discord_channel_id))}"
+            )
         settings_path = default_settings_path(Path(normalized_runtime_home))
         command = [
             *self.command_tokens(),
@@ -404,7 +454,7 @@ class ClaudeAgent(AgentPlugin):
         prefix.append(f"exec {' '.join(shlex.quote(part) for part in command)}")
         return " && ".join(prefix)
 
-    def native_launch_args(self, *, cwd: Path, cli_args: list[str] | tuple[str, ...]) -> list[str]:
+    def native_launch_args(self, *, cwd: Path, cli_args: Sequence[str]) -> list[str]:
         _ = cwd
         args = [str(value) for value in cli_args]
         if "--dangerously-skip-permissions" in args:
@@ -414,7 +464,9 @@ class ClaudeAgent(AgentPlugin):
     def command_tokens(self) -> list[str]:
         return claude_command_tokens(self._claude_command)
 
-    def matches_process(self, pane_command: str, descendant_commands: list[str]) -> bool:
+    def matches_process(
+        self, pane_command: str, descendant_commands: Iterable[str]
+    ) -> bool:
         process_names = claude_process_names(self._claude_command)
         if pane_command in process_names:
             return True
@@ -426,8 +478,12 @@ class ClaudeAgent(AgentPlugin):
 
     def capture_has_ready_surface(self, capture: str, cwd: Path) -> bool:
         lowered = capture.lower()
-        has_brand = "claude code" in lowered or "\nclaude" in lowered or " claude" in lowered
-        has_context = str(cwd) in capture or any(hint in lowered for hint in READY_SURFACE_HINTS)
+        has_brand = (
+            "claude code" in lowered or "\nclaude" in lowered or " claude" in lowered
+        )
+        has_context = str(cwd) in capture or any(
+            hint in lowered for hint in READY_SURFACE_HINTS
+        )
         return has_brand and has_context
 
     def extract_completion_summary(self, capture: str, prompt: str) -> str:

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Tuple
-
+from typing import Any, Tuple
 
 DEFAULT_MENTION_USER_ID = ""
 
@@ -95,8 +95,14 @@ def load_notify_config(
         or values.get("notify_targets")
     )
     discord = DiscordNotifyConfig(
-        bot_token=str(environ.get("DISCORD_BOT_TOKEN") or values.get("discord_bot_token") or "").strip(),
-        webhook_url=str(environ.get("DISCORD_WEBHOOK_URL") or values.get("discord_webhook_url") or "").strip(),
+        bot_token=str(
+            environ.get("DISCORD_BOT_TOKEN") or values.get("discord_bot_token") or ""
+        ).strip(),
+        webhook_url=str(
+            environ.get("DISCORD_WEBHOOK_URL")
+            or values.get("discord_webhook_url")
+            or ""
+        ).strip(),
         mention_user_id=str(
             environ.get("MENTION_USER_ID")
             or values.get("notify_mention_user_id")
@@ -105,7 +111,9 @@ def load_notify_config(
         timeout_seconds=_as_int(values.get("notify_timeout_seconds"), 8),
     )
     telegram = TelegramNotifyConfig(
-        bot_token=str(environ.get("TELEGRAM_BOT_TOKEN") or values.get("telegram_bot_token") or "").strip(),
+        bot_token=str(
+            environ.get("TELEGRAM_BOT_TOKEN") or values.get("telegram_bot_token") or ""
+        ).strip(),
         timeout_seconds=_as_int(values.get("notify_timeout_seconds"), 8),
     )
     return NotifyConfig(
@@ -113,7 +121,9 @@ def load_notify_config(
         provider=provider,
         include_cwd=_as_bool(values.get("notify_include_cwd"), True),
         include_session=_as_bool(values.get("notify_include_session"), True),
-        default_message_prefix=str(values.get("notify_default_message_prefix") or "Agent turn complete").strip()
+        default_message_prefix=str(
+            values.get("notify_default_message_prefix") or "Agent turn complete"
+        ).strip()
         or "Agent turn complete",
         max_message_chars=max(1, _as_int(values.get("notify_max_message_chars"), 1500)),
         summary_max_chars=max(1, _as_int(values.get("notify_summary_max_chars"), 1200)),

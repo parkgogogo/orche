@@ -17,7 +17,6 @@ from json_utils import JSONInputTooLargeError, read_json_file
 from paths import data_dir
 from tls import urlopen
 
-
 DEFAULT_RELEASE_REPO = "parkgogogo/tmux-orche"
 INSTALL_CHANNEL = "prebuilt-binary"
 INSTALL_METADATA_FILE = "install.json"
@@ -134,7 +133,11 @@ def infer_install_context(
     link_path = runtime_link_path()
     executable_path = runtime_executable_path()
     metadata_target = str((metadata or {}).get("target") or "").strip()
-    target = detect_target() if link_path is not None else (metadata_target or detect_target())
+    target = (
+        detect_target()
+        if link_path is not None
+        else (metadata_target or detect_target())
+    )
 
     if link_path is None:
         link_path_value = str((metadata or {}).get("link_path") or "").strip()
@@ -148,7 +151,10 @@ def infer_install_context(
         else:
             executable_path = link_path.resolve()
 
-    resolved_repo = str(repo or (metadata or {}).get("repo") or DEFAULT_RELEASE_REPO).strip() or DEFAULT_RELEASE_REPO
+    resolved_repo = (
+        str(repo or (metadata or {}).get("repo") or DEFAULT_RELEASE_REPO).strip()
+        or DEFAULT_RELEASE_REPO
+    )
     version = str((metadata or {}).get("version") or "").strip()
     install_root_value = str((metadata or {}).get("install_root") or "").strip()
     prefix_value = str((metadata or {}).get("prefix") or "").strip()
@@ -160,10 +166,20 @@ def infer_install_context(
             version = inferred_version
         install_root = inferred_install_root
     else:
-        install_root = Path(install_root_value).expanduser().resolve() if install_root_value else executable_path.parent
+        install_root = (
+            Path(install_root_value).expanduser().resolve()
+            if install_root_value
+            else executable_path.parent
+        )
 
-    prefix = link_path.parent.resolve() if runtime_link_path() is not None else (
-        Path(prefix_value).expanduser().resolve() if prefix_value else link_path.parent.resolve()
+    prefix = (
+        link_path.parent.resolve()
+        if runtime_link_path() is not None
+        else (
+            Path(prefix_value).expanduser().resolve()
+            if prefix_value
+            else link_path.parent.resolve()
+        )
     )
     if not version:
         version = str((metadata or {}).get("version") or "").strip()
@@ -179,7 +195,9 @@ def infer_install_context(
     )
 
 
-def metadata_matches_context(metadata: Optional[dict[str, Any]], context: InstallContext) -> bool:
+def metadata_matches_context(
+    metadata: Optional[dict[str, Any]], context: InstallContext
+) -> bool:
     if not metadata:
         return False
     if str(metadata.get("channel") or "").strip() != INSTALL_CHANNEL:
@@ -192,7 +210,12 @@ def metadata_matches_context(metadata: Optional[dict[str, Any]], context: Instal
     executable_value = str(metadata.get("executable_path") or "").strip()
     install_root_value = str(metadata.get("install_root") or "").strip()
     prefix_value = str(metadata.get("prefix") or "").strip()
-    if not link_path_value or not executable_value or not install_root_value or not prefix_value:
+    if (
+        not link_path_value
+        or not executable_value
+        or not install_root_value
+        or not prefix_value
+    ):
         return False
     try:
         metadata_link_path = Path(link_path_value).expanduser().resolve()
@@ -253,7 +276,9 @@ def release_archive_url(repo: str, version: str, target: str) -> str:
     return f"https://github.com/{repo}/releases/download/{version}/{release_archive_name(version, target)}"
 
 
-def download_release_archive(*, repo: str, version: str, target: str, destination: Path) -> None:
+def download_release_archive(
+    *, repo: str, version: str, target: str, destination: Path
+) -> None:
     request = urllib.request.Request(
         release_archive_url(repo, version, target),
         headers={"User-Agent": "orche-self-update"},
@@ -296,13 +321,25 @@ def _resolve_extracted_source(temp_path: Path) -> Path:
 def _safe_extract_archive(archive: tarfile.TarFile, destination: Path) -> None:
     root = destination.resolve()
     for member in archive.getmembers():
-        if member.issym() or member.islnk() or member.isfifo() or member.ischr() or member.isblk():
-            raise SelfUpdateError(f"Refusing to extract unsupported archive member type: {member.name}")
+        if (
+            member.issym()
+            or member.islnk()
+            or member.isfifo()
+            or member.ischr()
+            or member.isblk()
+        ):
+            raise SelfUpdateError(
+                f"Refusing to extract unsupported archive member type: {member.name}"
+            )
         if not member.isfile() and not member.isdir():
-            raise SelfUpdateError(f"Refusing to extract unsupported archive member type: {member.name}")
+            raise SelfUpdateError(
+                f"Refusing to extract unsupported archive member type: {member.name}"
+            )
         member_path = (destination / member.name).resolve()
         if member_path != root and root not in member_path.parents:
-            raise SelfUpdateError(f"Refusing to extract archive member outside target directory: {member.name}")
+            raise SelfUpdateError(
+                f"Refusing to extract archive member outside target directory: {member.name}"
+            )
     archive.extractall(destination)
 
 

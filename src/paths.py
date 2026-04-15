@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-
 APP_NAME = "orche"
 CONFIG_FILE_NAME = "config.json"
 HISTORY_DIR_NAME = "history"
@@ -18,7 +17,9 @@ def xdg_config_home() -> Path:
 
 
 def xdg_data_home() -> Path:
-    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")).expanduser()
+    return Path(
+        os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")
+    ).expanduser()
 
 
 def config_dir() -> Path:

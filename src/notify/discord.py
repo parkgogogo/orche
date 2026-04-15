@@ -40,9 +40,13 @@ class DiscordNotifier(Notifier):
             )
         else:
             if not discord.bot_token:
-                raise NotifyConfigError("discord bot token is required when webhook_url is not configured")
+                raise NotifyConfigError(
+                    "discord bot token is required when webhook_url is not configured"
+                )
             if not route.target:
-                raise NotifyConfigError("discord channel_id is required for bot-token delivery")
+                raise NotifyConfigError(
+                    "discord channel_id is required for bot-token delivery"
+                )
             response = self.http_client.post(
                 f"https://discord.com/api/v10/channels/{route.target}/messages",
                 headers={
@@ -56,7 +60,12 @@ class DiscordNotifier(Notifier):
             raise NotifyDeliveryError(
                 f"discord delivery failed with status={response.status_code}: {response.body.strip()}"
             )
-        return DeliveryResult(provider=self.name, ok=True, detail=str(response.status_code), target=route.target)
+        return DeliveryResult(
+            provider=self.name,
+            ok=True,
+            detail=str(response.status_code),
+            target=route.target,
+        )
 
     def _allowed_mentions(self) -> dict:
         if self.config.discord.mention_user_id:

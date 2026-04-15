@@ -7,7 +7,9 @@ from pathlib import Path
 
 try:
     import certifi
-except ImportError:  # pragma: no cover - fallback for source trees without optional deps installed
+except (
+    ImportError
+):  # pragma: no cover - fallback for source trees without optional deps installed
     certifi = None
 
 

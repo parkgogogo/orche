@@ -47,7 +47,12 @@ class TelegramNotifier(Notifier):
             raise NotifyDeliveryError(
                 f"telegram delivery failed with status={response.status_code}: {response.body.strip()}"
             )
-        return DeliveryResult(provider=self.name, ok=True, detail=str(response.status_code), target=chat_id)
+        return DeliveryResult(
+            provider=self.name,
+            ok=True,
+            detail=str(response.status_code),
+            target=chat_id,
+        )
 
     def _render_text(self, event: NotifyEvent) -> str:
         summary = escape(event.summary or self.config.default_message_prefix)

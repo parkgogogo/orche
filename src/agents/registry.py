@@ -6,8 +6,7 @@ from functools import lru_cache
 
 from .base import AgentPlugin
 
-
-BUILTIN_PLUGIN_MODULES = (
+BUILTIN_PLUGIN_MODULES: tuple[str, ...] = (
     "agents.codex",
     "agents.claude",
 )
@@ -27,7 +26,9 @@ class AgentRegistry:
         module = importlib.import_module(module_name)
         plugins = getattr(module, "PLUGINS", None)
         if not plugins:
-            raise ValueError(f"Agent plugin module {module_name} did not expose PLUGINS")
+            raise ValueError(
+                f"Agent plugin module {module_name} did not expose PLUGINS"
+            )
         for plugin in plugins:
             self.register(plugin)
 
@@ -36,7 +37,9 @@ class AgentRegistry:
         plugin = self._plugins.get(key)
         if plugin is None:
             supported = ", ".join(sorted(self._plugins))
-            raise ValueError(f"Unsupported agent: {name}. Supported agents: {supported}")
+            raise ValueError(
+                f"Unsupported agent: {name}. Supported agents: {supported}"
+            )
         return plugin
 
     def names(self) -> tuple[str, ...]:

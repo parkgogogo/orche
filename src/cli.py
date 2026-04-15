@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, TextIO, cast
 
 import click
 import typer
@@ -20,44 +20,17 @@ from rich.table import Table
 from rich.text import Text
 from typer.core import TyperGroup
 
-from tls import configure_tls_runtime
 from backend import (
-    BACKEND,
     OrcheError,
-    attach_session,
-    append_action_history,
-    bridge_keys,
-    bridge_read,
-    bridge_type,
     build_status,
     cancel_session,
-    claim_turn_notification,
     close_session,
-    complete_pending_turn,
     current_session_id,
-    default_session_name,
-    expire_managed_sessions,
     ensure_native_session,
     ensure_session,
-    get_config_value,
-    list_config_values,
-    list_sessions,
-    load_config,
-    load_history_entries,
     latest_turn_summary,
-    log_event,
-    log_exception,
-    mark_pending_turn_prompt_accepted,
-    mark_session_startup_blocked,
-    mark_session_startup_ready,
-    release_turn_notification,
     resolve_session_context,
-    run_session_watchdog,
     send_prompt,
-    session_exists,
-    reset_config_value,
-    set_config_value,
-    supported_agent_names,
 )
 from notify import (
     NotificationService,
@@ -70,8 +43,35 @@ from notify import (
     resolve_routes,
 )
 from paths import ensure_directories
-from version import __version__
+from runtime.agent import BACKEND, append_action_history, supported_agent_names
+from runtime.turn import (
+    claim_turn_notification,
+    complete_pending_turn,
+    mark_pending_turn_prompt_accepted,
+    mark_session_startup_blocked,
+    mark_session_startup_ready,
+    release_turn_notification,
+)
+from runtime.watchdog import run_session_watchdog
 from self_update import SelfUpdateError, perform_self_update
+from session.config import (
+    get_config_value,
+    list_config_values,
+    load_config,
+    reset_config_value,
+    set_config_value,
+)
+from session.meta import load_history_entries, log_event, log_exception
+from session.ops import (
+    attach_session,
+    expire_managed_sessions,
+    list_sessions,
+    session_exists,
+)
+from text_utils import default_session_name
+from tls import configure_tls_runtime
+from tmux.bridge import bridge_keys, bridge_read, bridge_type
+from version import __version__
 
 
 class ShortHelpTyperGroup(TyperGroup):
@@ -79,6 +79,7 @@ class ShortHelpTyperGroup(TyperGroup):
         if args and args[0] == "-h":
             args = ["--help", *args[1:]]
         return super().parse_args(ctx, args)
+
 
 app = typer.Typer(
     name="orche",
@@ -99,7 +100,7 @@ stderr = Console(stderr=True)
 _ASCII_ENCODINGS = {"ascii", "us-ascii", "ansi_x3.4-1968"}
 
 
-def _utf8_stream(stream: object) -> object:
+def _utf8_stream(stream: TextIO) -> TextIO:
     encoding = str(getattr(stream, "encoding", "") or "").lower()
     if encoding and encoding not in _ASCII_ENCODINGS:
         return stream
@@ -110,7 +111,16 @@ def _utf8_stream(stream: object) -> object:
     buffer = getattr(stream, "buffer", None)
     if buffer is None:
         return stream
-    return io.TextIOWrapper(buffer, encoding="utf-8", errors="replace", line_buffering=True, write_through=True)
+    return cast(
+        TextIO,
+        io.TextIOWrapper(
+            buffer,
+            encoding="utf-8",
+            errors="replace",
+            line_buffering=True,
+            write_through=True,
+        ),
+    )
 
 
 def _configure_output_streams() -> None:
@@ -155,21 +165,30 @@ def _print_notify_verbose(
     console.print("notify config:")
     console.print(f"  enabled: {_bool_label(notify_config.enabled)}")
     console.print(f"  provider: {notify_config.provider or '-'}")
-    console.print(f"  discord.bot_token: {_configured_label(notify_config.discord.bot_token)}")
-    console.print(f"  discord.webhook_url: {_configured_label(notify_config.discord.webhook_url)}")
-    console.print(f"  telegram.bot_token: {_configured_label(notify_config.telegram.bot_token)}")
     console.print(
-        "  discord.mention_user_id: "
-        f"{notify_config.discord.mention_user_id or '-'}"
+        f"  discord.bot_token: {_configured_label(notify_config.discord.bot_token)}"
+    )
+    console.print(
+        f"  discord.webhook_url: {_configured_label(notify_config.discord.webhook_url)}"
+    )
+    console.print(
+        f"  telegram.bot_token: {_configured_label(notify_config.telegram.bot_token)}"
+    )
+    console.print(
+        f"  discord.mention_user_id: {notify_config.discord.mention_user_id or '-'}"
     )
     console.print(
         "  runtime.channel_id: "
         f"{channel_id or runtime_config.get('discord_channel_id') or '-'}"
     )
-    console.print(f"  runtime.session: {session or runtime_config.get('session') or '-'}")
+    console.print(
+        f"  runtime.session: {session or runtime_config.get('session') or '-'}"
+    )
     notify_binding = runtime_config.get("notify_binding")
     if isinstance(notify_binding, dict):
-        console.print(f"  runtime.notify_binding: {json.dumps(notify_binding, ensure_ascii=False)}")
+        console.print(
+            f"  runtime.notify_binding: {json.dumps(notify_binding, ensure_ascii=False)}"
+        )
     console.print(f"  payload_bytes: {len(payload_text.encode('utf-8'))}")
     parsed_payload = parse_payload(payload_text)
     if parsed_payload is None:
@@ -237,19 +256,28 @@ def _notify_runtime_config(runtime_config: dict, session: str) -> dict:
             if isinstance(legacy_routes, dict):
                 tmux_route = legacy_routes.get("tmux-bridge")
                 if isinstance(tmux_route, dict):
-                    target = str(tmux_route.get("target_session") or tmux_route.get("target") or "").strip()
+                    target = str(
+                        tmux_route.get("target_session")
+                        or tmux_route.get("target")
+                        or ""
+                    ).strip()
                     if target:
                         merged["notify_binding"] = {
                             "provider": "tmux-bridge",
                             "target": target,
                         }
     notify_binding = merged.get("notify_binding")
-    if isinstance(notify_binding, dict) and str(notify_binding.get("provider") or "").strip() == "discord":
+    if (
+        isinstance(notify_binding, dict)
+        and str(notify_binding.get("provider") or "").strip() == "discord"
+    ):
         target = str(notify_binding.get("target") or "").strip()
         if target:
             merged["discord_channel_id"] = target
             merged["codex_turn_complete_channel_id"] = target
-            merged["discord_session"] = str(notify_binding.get("session") or merged.get("discord_session") or "")
+            merged["discord_session"] = str(
+                notify_binding.get("session") or merged.get("discord_session") or ""
+            )
     return merged
 
 
@@ -272,13 +300,17 @@ def _inline_parent_session_name(notify: Optional[str]) -> str:
     return target if current and target == current else ""
 
 
-def _associated_session_name(name: Optional[str], cwd: Path, agent: str, notify: Optional[str]) -> str:
+def _associated_session_name(
+    name: Optional[str], cwd: Path, agent: str, notify: Optional[str]
+) -> str:
     if name:
         return name
     parent_session = _inline_parent_session_name(notify)
     if not parent_session:
         return default_session_name(cwd.resolve(), agent, secrets.token_hex(3))
-    return default_session_name(cwd.resolve(), agent, f"{parent_session}-{secrets.token_hex(3)}")
+    return default_session_name(
+        cwd.resolve(), agent, f"{parent_session}-{secrets.token_hex(3)}"
+    )
 
 
 def _default_cwd() -> Path:
@@ -336,7 +368,9 @@ def _print_action_ok(action: str, **fields: object) -> None:
     console.print(f"{action} ok:{suffix}")
 
 
-def _resolve_path(value: Optional[Path], *, must_exist: bool = False, require_dir: bool = False) -> Optional[Path]:
+def _resolve_path(
+    value: Optional[Path], *, must_exist: bool = False, require_dir: bool = False
+) -> Optional[Path]:
     if value is None:
         return None
     path = value.expanduser()
@@ -366,7 +400,10 @@ def _render_status(info: dict) -> None:
     body.append("Pane: ", style="bold cyan")
     body.append(f"{info.get('pane_id', '-')}\n")
     body.append("Running: ", style="bold cyan")
-    body.append("yes\n" if info.get("agent_running") else "no\n", style="green" if info.get("agent_running") else "red")
+    body.append(
+        "yes\n" if info.get("agent_running") else "no\n",
+        style="green" if info.get("agent_running") else "red",
+    )
     body.append("Pane exists: ", style="bold cyan")
     body.append("yes\n" if info.get("pane_exists") else "no\n")
     body.append("CWD: ", style="bold cyan")
@@ -411,13 +448,17 @@ def _render_status(info: dict) -> None:
     console.print(Panel.fit(body, title="orche status", border_style="blue"))
 
 
-def _apply_internal_notify_event(event: NotifyEvent) -> tuple[bool, Optional[NotifyEvent]]:
+def _apply_internal_notify_event(
+    event: NotifyEvent,
+) -> tuple[bool, Optional[NotifyEvent]]:
     if event.event == "session-start":
         mark_session_startup_ready(event.session, source="session-start")
         console.print("notify ok: internal event=session-start detail=startup-ready")
         return True, None
     if event.event == "prompt-accepted":
-        prompt_ack = mark_pending_turn_prompt_accepted(event.session, source="user-prompt-submit")
+        prompt_ack = mark_pending_turn_prompt_accepted(
+            event.session, source="user-prompt-submit"
+        )
         detail = "pending-turn-updated" if prompt_ack else "no-pending-turn"
         console.print(f"notify ok: internal event=prompt-accepted detail={detail}")
         return True, None
@@ -425,7 +466,11 @@ def _apply_internal_notify_event(event: NotifyEvent) -> tuple[bool, Optional[Not
         return False, event
     reason = str(event.summary or "").strip()
     if not reason:
-        reason = "Claude requested permission" if event.event == "permission-request" else "Claude sent a notification"
+        reason = (
+            "Claude requested permission"
+            if event.event == "permission-request"
+            else "Claude sent a notification"
+        )
     startup, changed = mark_session_startup_blocked(
         event.session,
         reason=reason,
@@ -487,7 +532,9 @@ def _open_shortcut_session(
     cwd: Optional[Path] = None,
     name: Optional[str] = None,
 ) -> tuple[str, str]:
-    resolved_cwd = _resolve_path(cwd or _default_cwd(), must_exist=True, require_dir=True)
+    resolved_cwd = _resolve_path(
+        cwd or _default_cwd(), must_exist=True, require_dir=True
+    )
     if resolved_cwd is None:
         raise OrcheError("Failed to resolve cwd")
     return _open_session(
@@ -508,15 +555,18 @@ def _record_session_action(session: str, action: str, **fields: object) -> None:
 @app.callback(invoke_without_command=True)
 def main_callback(
     ctx: typer.Context,
-    version: Optional[bool] = typer.Option(None, "--version", "-v", help="Show version and exit."),
+    version: Optional[bool] = typer.Option(
+        None, "--version", "-v", help="Show version and exit."
+    ),
 ) -> None:
     _configure_output_streams()
     configure_tls_runtime()
     ensure_directories()
-    if (
-        ctx.invoked_subcommand not in {"notify-internal", "_notify-discord", "watchdog-loop-internal"}
-        and shutil.which("tmux")
-    ):
+    if ctx.invoked_subcommand not in {
+        "notify-internal",
+        "_notify-discord",
+        "watchdog-loop-internal",
+    } and shutil.which("tmux"):
         expire_managed_sessions()
     if version:
         console.print(f"orche {__version__}")
@@ -546,7 +596,11 @@ def whoami() -> None:
 
 @app.command("update")
 def update_command(
-    version: Optional[str] = typer.Option(None, "--version", help="Target release tag. Defaults to the latest published binary."),
+    version: Optional[str] = typer.Option(
+        None,
+        "--version",
+        help="Target release tag. Defaults to the latest published binary.",
+    ),
 ) -> None:
     try:
         result = perform_self_update(requested_version=version)
@@ -558,7 +612,7 @@ def update_command(
             updated="yes" if result.updated else "no",
         )
     except (SelfUpdateError, OrcheError, subprocess.CalledProcessError) as exc:
-        _handle_error(exc)
+        raise click.ClickException(_format_error_detail(exc)) from exc
 
 
 @config_app.command("get")
@@ -611,22 +665,43 @@ def config_list() -> None:
 @app.command("open", context_settings=_OPEN_CONTEXT)
 def open_session(
     ctx: typer.Context,
-    agent: str = typer.Option(..., help=f"Agent name. Supported: {', '.join(supported_agent_names())}."),
-    cwd: Optional[Path] = typer.Option(None, callback=_resolve_cwd, file_okay=False, dir_okay=True, resolve_path=False, help="Working directory for the session. Defaults to the current directory."),
-    name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-<agent>-<random>."),
+    agent: str = typer.Option(
+        ..., help=f"Agent name. Supported: {', '.join(supported_agent_names())}."
+    ),
+    cwd: Optional[Path] = typer.Option(
+        None,
+        callback=_resolve_cwd,
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=False,
+        help="Working directory for the session. Defaults to the current directory.",
+    ),
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        help="Explicit session name. Defaults to <repo>-<agent>-<random>.",
+    ),
     notify: Optional[str] = typer.Option(
         None,
         "--notify",
         help="Notify target in the form discord:<channel-id>, telegram:<chat-id>, or tmux:<session>.",
     ),
-    prompt: Optional[str] = typer.Option(None, "--prompt", help="Prompt text to send immediately after opening a managed session."),
+    prompt: Optional[str] = typer.Option(
+        None,
+        "--prompt",
+        help="Prompt text to send immediately after opening a managed session.",
+    ),
 ) -> None:
     try:
-        resolved_cwd = _resolve_path(cwd or _default_cwd(), must_exist=True, require_dir=True)
+        resolved_cwd = _resolve_path(
+            cwd or _default_cwd(), must_exist=True, require_dir=True
+        )
         if resolved_cwd is None:
             raise OrcheError("Failed to resolve cwd")
         if prompt is not None and ctx.args:
-            raise OrcheError("open does not support combining --prompt with raw agent args")
+            raise OrcheError(
+                "open does not support combining --prompt with raw agent args"
+            )
         session, _pane_id = _open_session(
             cwd=resolved_cwd,
             agent=agent,
@@ -664,7 +739,9 @@ def codex_shortcut(
         resolve_path=False,
         help="Working directory for the session. Defaults to the current directory.",
     ),
-    name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-codex-<random>."),
+    name: Optional[str] = typer.Option(
+        None, "--name", help="Explicit session name. Defaults to <repo>-codex-<random>."
+    ),
 ) -> None:
     try:
         session, pane_id = _open_shortcut_session(ctx, "codex", cwd=cwd, name=name)
@@ -685,7 +762,11 @@ def claude_shortcut(
         resolve_path=False,
         help="Working directory for the session. Defaults to the current directory.",
     ),
-    name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-claude-<random>."),
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        help="Explicit session name. Defaults to <repo>-claude-<random>.",
+    ),
 ) -> None:
     try:
         session, pane_id = _open_shortcut_session(ctx, "claude", cwd=cwd, name=name)
@@ -701,9 +782,13 @@ def prompt(
     message: str = typer.Argument(..., help="Prompt text to send."),
 ) -> None:
     try:
-        cwd, agent, _meta = resolve_session_context(session=session, require_cwd_agent=True)
+        cwd, agent, _meta = resolve_session_context(
+            session=session, require_cwd_agent=True
+        )
         if cwd is None or agent is None:
-            raise OrcheError(f"Session {session} is missing cwd/agent context; open it first")
+            raise OrcheError(
+                f"Session {session} is missing cwd/agent context; open it first"
+            )
         send_prompt(session, cwd, agent, message)
         _print_action_ok("prompt", session=session)
     except (OrcheError, subprocess.CalledProcessError) as exc:
@@ -737,9 +822,13 @@ def input_text(
     text: str = typer.Argument(..., help="Text to type without pressing Enter."),
 ) -> None:
     try:
-        cwd, agent, _meta = resolve_session_context(session=session, require_cwd_agent=True)
+        cwd, agent, _meta = resolve_session_context(
+            session=session, require_cwd_agent=True
+        )
         if cwd is None or agent is None:
-            raise OrcheError(f"Session {session} is missing cwd/agent context; open it first")
+            raise OrcheError(
+                f"Session {session} is missing cwd/agent context; open it first"
+            )
         bridge_type(session, text)
         append_action_history(session, cwd, agent, "input", text=text)
         _print_action_ok("input", session=session, chars=len(text))
@@ -766,9 +855,13 @@ def key(
     ),
 ) -> None:
     try:
-        cwd, agent, _meta = resolve_session_context(session=session, require_cwd_agent=True)
+        cwd, agent, _meta = resolve_session_context(
+            session=session, require_cwd_agent=True
+        )
         if cwd is None or agent is None:
-            raise OrcheError(f"Session {session} is missing cwd/agent context; open it first")
+            raise OrcheError(
+                f"Session {session} is missing cwd/agent context; open it first"
+            )
         bridge_keys(session, keys)
         append_action_history(session, cwd, agent, "key", keys=list(keys))
         _print_action_ok("key", session=session, keys=",".join(keys))
@@ -802,9 +895,13 @@ def cancel(
     session: str = typer.Argument(..., help="Session name."),
 ) -> None:
     try:
-        cwd, agent, _meta = resolve_session_context(session=session, require_cwd_agent=True)
+        cwd, agent, _meta = resolve_session_context(
+            session=session, require_cwd_agent=True
+        )
         if cwd is None or agent is None:
-            raise OrcheError(f"Session {session} is missing cwd/agent context; open it first")
+            raise OrcheError(
+                f"Session {session} is missing cwd/agent context; open it first"
+            )
         pane_id = cancel_session(session)
         append_action_history(session, cwd, agent, "cancel", pane_id=pane_id)
         _print_action_ok("cancel", session=session, pane=pane_id)
@@ -821,7 +918,9 @@ def close(
         if all_sessions:
             if session:
                 raise OrcheError("close does not accept a session argument with --all")
-            sessions = [str(entry.get("session") or "").strip() for entry in list_sessions()]
+            sessions = [
+                str(entry.get("session") or "").strip() for entry in list_sessions()
+            ]
             sessions = [name for name in sessions if name]
             if not sessions:
                 console.print("No sessions found")
@@ -833,14 +932,18 @@ def close(
                     cwd, agent, _meta = resolve_session_context(session=name)
                     pane_id = close_session(name)
                     if cwd is not None and agent is not None:
-                        append_action_history(name, cwd, agent, "close", pane_id=pane_id)
+                        append_action_history(
+                            name, cwd, agent, "close", pane_id=pane_id
+                        )
                     closed.append(f"close ok: session={name} pane={pane_id}")
                 except (OrcheError, subprocess.CalledProcessError) as exc:
                     failures.append(f"{name}: {_format_error_detail(exc)}")
             for line in closed:
                 console.print(line)
             if failures:
-                raise OrcheError("Failed to close some sessions: " + "; ".join(failures))
+                raise OrcheError(
+                    "Failed to close some sessions: " + "; ".join(failures)
+                )
             return
 
         if not session:
@@ -873,18 +976,28 @@ def turn_summary_hidden(
 
 @app.command("notify-internal", hidden=True)
 def notify_internal_command(
-    payload: Optional[str] = typer.Argument(None, help="Optional JSON payload. If omitted, stdin is used."),
-    session: Optional[str] = typer.Option(None, "--session", help="Explicit session override."),
-    channel_id: Optional[str] = typer.Option(None, "--channel-id", help="Explicit Discord channel override."),
+    payload: Optional[str] = typer.Argument(
+        None, help="Optional JSON payload. If omitted, stdin is used."
+    ),
+    session: Optional[str] = typer.Option(
+        None, "--session", help="Explicit session override."
+    ),
+    channel_id: Optional[str] = typer.Option(
+        None, "--channel-id", help="Explicit Discord channel override."
+    ),
     status: str = typer.Option("success", "--status", help="Delivery status label."),
-    verbose: bool = typer.Option(False, "--verbose", help="Print config, payload, and delivery details."),
+    verbose: bool = typer.Option(
+        False, "--verbose", help="Print config, payload, and delivery details."
+    ),
 ) -> None:
     try:
         payload_text = payload
         if payload_text is None and not sys.stdin.isatty():
             payload_text = sys.stdin.read()
         runtime_config = load_config()
-        resolved_channel_id = channel_id or os.environ.get("ORCHE_DISCORD_CHANNEL_ID", "")
+        resolved_channel_id = channel_id or os.environ.get(
+            "ORCHE_DISCORD_CHANNEL_ID", ""
+        )
         resolved_session = session or os.environ.get("ORCHE_SESSION", "")
         runtime_config = _notify_runtime_config(runtime_config, resolved_session)
         notify_config = load_notify_config(runtime_config)
@@ -897,7 +1010,9 @@ def notify_internal_command(
             explicit_channel_id=resolved_channel_id,
             status=status,
         )
-        handled, replacement_event = _apply_internal_notify_event(event) if event is not None else (False, event)
+        handled, replacement_event = (
+            _apply_internal_notify_event(event) if event is not None else (False, event)
+        )
         if handled:
             return
         if replacement_event is not None:
@@ -932,7 +1047,9 @@ def notify_internal_command(
             )
             return
         if event is None:
-            console.print("notify skipped: payload/config did not produce a notify event")
+            console.print(
+                "notify skipped: payload/config did not produce a notify event"
+            )
             log_event(
                 "notify.skipped",
                 reason="event-none",
@@ -1058,11 +1175,19 @@ def watchdog_loop_internal_command(
 
 @app.command("_notify-discord", hidden=True)
 def notify_discord_hidden(
-    payload: Optional[str] = typer.Argument(None, help="Optional JSON payload. If omitted, stdin is used."),
-    session: Optional[str] = typer.Option(None, "--session", help="Explicit session override."),
-    channel_id: Optional[str] = typer.Option(None, "--channel-id", help="Explicit Discord channel override."),
+    payload: Optional[str] = typer.Argument(
+        None, help="Optional JSON payload. If omitted, stdin is used."
+    ),
+    session: Optional[str] = typer.Option(
+        None, "--session", help="Explicit session override."
+    ),
+    channel_id: Optional[str] = typer.Option(
+        None, "--channel-id", help="Explicit Discord channel override."
+    ),
     status: str = typer.Option("success", "--status", help="Delivery status label."),
-    verbose: bool = typer.Option(False, "--verbose", help="Print config, payload, and delivery details."),
+    verbose: bool = typer.Option(
+        False, "--verbose", help="Print config, payload, and delivery details."
+    ),
 ) -> None:
     notify_internal_command(
         payload=payload,
@@ -1076,7 +1201,9 @@ def notify_discord_hidden(
 @app.command("history", hidden=True)
 def history(
     session: str = typer.Option(..., "--session", help="Session name."),
-    limit: int = typer.Option(20, "--limit", min=1, help="Number of history entries to show."),
+    limit: int = typer.Option(
+        20, "--limit", min=1, help="Number of history entries to show."
+    ),
 ) -> None:
     entries = load_history_entries(session)[-limit:]
     if not entries:
@@ -1089,7 +1216,7 @@ def history(
         elif entry.get("text"):
             details = f'text: "{entry["text"]}"'
         elif entry.get("keys"):
-            details = f'keys: {" ".join(entry["keys"])}'
+            details = f"keys: {' '.join(entry['keys'])}"
         line = f"{entry.get('timestamp', '-')}\t{entry.get('action', '-')}\t{entry.get('session', '-')}"
         if details:
             line += f"\t{details}"

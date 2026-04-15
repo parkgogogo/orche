@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Optional
 
-from agents.common import normalize_runtime_home, validate_discord_channel_id as common_validate_discord_channel_id, write_text_atomically
+from agents.common import normalize_runtime_home, write_text_atomically
+from agents.common import (
+    validate_discord_channel_id as common_validate_discord_channel_id,
+)
 from json_utils import JSONInputTooLargeError, read_json_file
 from paths import config_path, ensure_directories
 
 from .meta import DEFAULT_MANAGED_SESSION_TTL_SECONDS, DEFAULT_MAX_INLINE_SESSIONS
-
 
 CONFIG_COMMENT = "orche runtime config. session is the active orche agent session label; discord_session is the Discord/OpenClaw session key used for notify routing."
 SUPPORTED_NOTIFY_PROVIDERS = ("discord", "telegram", "tmux-bridge")
@@ -29,7 +32,9 @@ CONFIG_KEY_MAP = {
 DEFAULT_CLAUDE_COMMAND = "claude"
 
 
-def validate_discord_channel_id(value: str, *, option_name: str = "--channel-id") -> str:
+def validate_discord_channel_id(
+    value: str, *, option_name: str = "--channel-id"
+) -> str:
     try:
         return common_validate_discord_channel_id(value)
     except ValueError as exc:
@@ -44,7 +49,9 @@ def validate_notify_provider(value: str, *, option_name: str = "--notify-to") ->
     if not provider:
         raise RuntimeError(f"{option_name} is required")
     if provider not in SUPPORTED_NOTIFY_PROVIDERS:
-        raise RuntimeError(f"{option_name} must be one of: {', '.join(SUPPORTED_NOTIFY_PROVIDERS)}")
+        raise RuntimeError(
+            f"{option_name} must be one of: {', '.join(SUPPORTED_NOTIFY_PROVIDERS)}"
+        )
     return provider
 
 
@@ -58,7 +65,13 @@ def _read_notify_binding(payload: Mapping[str, Any]) -> Dict[str, str]:
         provider = str(binding.get("provider") or "").strip()
         target = str(binding.get("target") or "").strip()
         if provider == "discord" and target.isdigit():
-            return {"provider": "discord", "target": target, "session": str(binding.get("session") or derive_discord_session(target)).strip()}
+            return {
+                "provider": "discord",
+                "target": target,
+                "session": str(
+                    binding.get("session") or derive_discord_session(target)
+                ).strip(),
+            }
         if provider in {"tmux-bridge", "telegram"} and target:
             return {"provider": provider, "target": target}
     legacy_routes = payload.get("notify_routes")
@@ -67,8 +80,17 @@ def _read_notify_binding(payload: Mapping[str, Any]) -> Dict[str, str]:
         if isinstance(discord_route, Mapping):
             target = str(discord_route.get("channel_id") or "").strip()
             if target.isdigit():
-                return {"provider": "discord", "target": target, "session": str(discord_route.get("session") or derive_discord_session(target)).strip()}
-        for provider, key in (("tmux-bridge", "target_session"), ("telegram", "chat_id")):
+                return {
+                    "provider": "discord",
+                    "target": target,
+                    "session": str(
+                        discord_route.get("session") or derive_discord_session(target)
+                    ).strip(),
+                }
+        for provider, key in (
+            ("tmux-bridge", "target_session"),
+            ("telegram", "chat_id"),
+        ):
             route = legacy_routes.get(provider)
             if isinstance(route, Mapping):
                 target = str(route.get(key) or route.get("target") or "").strip()
@@ -76,7 +98,14 @@ def _read_notify_binding(payload: Mapping[str, Any]) -> Dict[str, str]:
                     return {"provider": provider, "target": target}
     discord_channel_id = str(payload.get("discord_channel_id") or "").strip()
     if discord_channel_id.isdigit():
-        return {"provider": "discord", "target": discord_channel_id, "session": str(payload.get("discord_session") or derive_discord_session(discord_channel_id)).strip()}
+        return {
+            "provider": "discord",
+            "target": discord_channel_id,
+            "session": str(
+                payload.get("discord_session")
+                or derive_discord_session(discord_channel_id)
+            ).strip(),
+        }
     return {}
 
 
@@ -84,15 +113,44 @@ def build_notify_binding(provider: str, target: str) -> Dict[str, str]:
     normalized_provider = validate_notify_provider(provider)
     normalized_target = str(target or "").strip()
     if normalized_provider == "discord":
-        channel_id = validate_discord_channel_id(normalized_target, option_name="--notify-target")
-        return {"provider": "discord", "target": channel_id, "session": derive_discord_session(channel_id)}
+        channel_id = validate_discord_channel_id(
+            normalized_target, option_name="--notify-target"
+        )
+        return {
+            "provider": "discord",
+            "target": channel_id,
+            "session": derive_discord_session(channel_id),
+        }
     if not normalized_target:
-        raise RuntimeError(f"--notify-target is required for --notify-to {normalized_provider}")
+        raise RuntimeError(
+            f"--notify-target is required for --notify-to {normalized_provider}"
+        )
     return {"provider": normalized_provider, "target": normalized_target}
 
 
 def default_config_values() -> Dict[str, Any]:
-    return {"_comment": CONFIG_COMMENT, "claude_command": "", "claude_home_path": "", "claude_config_path": "", "codex_turn_complete_channel_id": "", "discord_bot_token": "", "discord_channel_id": "", "discord_webhook_url": "", "telegram_bot_token": "", "max_inline_sessions": DEFAULT_MAX_INLINE_SESSIONS, "notify_enabled": True, "managed_session_ttl_seconds": DEFAULT_MANAGED_SESSION_TTL_SECONDS, "session": "", "discord_session": "", "runtime_home": "", "runtime_home_managed": False, "runtime_label": "", "codex_home": "", "codex_home_managed": False, "tmux_session": ""}
+    return {
+        "_comment": CONFIG_COMMENT,
+        "claude_command": "",
+        "claude_home_path": "",
+        "claude_config_path": "",
+        "codex_turn_complete_channel_id": "",
+        "discord_bot_token": "",
+        "discord_channel_id": "",
+        "discord_webhook_url": "",
+        "telegram_bot_token": "",
+        "max_inline_sessions": DEFAULT_MAX_INLINE_SESSIONS,
+        "notify_enabled": True,
+        "managed_session_ttl_seconds": DEFAULT_MANAGED_SESSION_TTL_SECONDS,
+        "session": "",
+        "discord_session": "",
+        "runtime_home": "",
+        "runtime_home_managed": False,
+        "runtime_label": "",
+        "codex_home": "",
+        "codex_home_managed": False,
+        "tmux_session": "",
+    }
 
 
 def load_raw_config() -> Dict[str, Any]:
@@ -115,11 +173,15 @@ def load_config() -> Dict[str, Any]:
 
 def save_config(config: Dict[str, Any]) -> None:
     ensure_directories()
-    write_text_atomically(config_path(), json.dumps(config, indent=2, ensure_ascii=False) + "\n")
+    write_text_atomically(
+        config_path(), json.dumps(config, indent=2, ensure_ascii=False) + "\n"
+    )
 
 
 def managed_session_ttl_seconds(config: Optional[Mapping[str, Any]] = None) -> int:
-    raw = dict(config or load_config()).get("managed_session_ttl_seconds", DEFAULT_MANAGED_SESSION_TTL_SECONDS)
+    raw = dict(config or load_config()).get(
+        "managed_session_ttl_seconds", DEFAULT_MANAGED_SESSION_TTL_SECONDS
+    )
     try:
         return int(raw)
     except (TypeError, ValueError):
@@ -127,7 +189,9 @@ def managed_session_ttl_seconds(config: Optional[Mapping[str, Any]] = None) -> i
 
 
 def max_inline_sessions(config: Optional[Mapping[str, Any]] = None) -> int:
-    raw = dict(config or load_config()).get("max_inline_sessions", DEFAULT_MAX_INLINE_SESSIONS)
+    raw = dict(config or load_config()).get(
+        "max_inline_sessions", DEFAULT_MAX_INLINE_SESSIONS
+    )
     try:
         value = int(raw)
     except (TypeError, ValueError):
@@ -140,13 +204,26 @@ def max_inline_sessions(config: Optional[Mapping[str, Any]] = None) -> int:
 def config_key_field(key: str) -> str:
     field = CONFIG_KEY_MAP.get(key)
     if field is None:
-        raise RuntimeError(f"Unsupported config key: {key}. Supported keys: {', '.join(sorted(CONFIG_KEY_MAP))}")
+        raise RuntimeError(
+            f"Unsupported config key: {key}. Supported keys: {', '.join(sorted(CONFIG_KEY_MAP))}"
+        )
     return field
 
 
 def default_config_value(key: str) -> Any:
     config_key_field(key)
-    defaults = {"claude.command": DEFAULT_CLAUDE_COMMAND, "claude.home-path": "~/.claude", "claude.config-path": "~/.claude.json", "discord.bot-token": "", "discord.mention-user-id": "", "discord.webhook-url": "", "inline.max-sessions": DEFAULT_MAX_INLINE_SESSIONS, "managed.ttl-seconds": DEFAULT_MANAGED_SESSION_TTL_SECONDS, "notify.enabled": True, "telegram.bot-token": ""}
+    defaults = {
+        "claude.command": DEFAULT_CLAUDE_COMMAND,
+        "claude.home-path": "~/.claude",
+        "claude.config-path": "~/.claude.json",
+        "discord.bot-token": "",
+        "discord.mention-user-id": "",
+        "discord.webhook-url": "",
+        "inline.max-sessions": DEFAULT_MAX_INLINE_SESSIONS,
+        "managed.ttl-seconds": DEFAULT_MANAGED_SESSION_TTL_SECONDS,
+        "notify.enabled": True,
+        "telegram.bot-token": "",
+    }
     return defaults[key]
 
 
@@ -170,17 +247,23 @@ def set_config_value(key: str, value: str) -> Dict[str, Any]:
         elif lowered in {"0", "false", "no", "off"}:
             normalized = False
         else:
-            raise RuntimeError("notify.enabled must be one of: true, false, 1, 0, yes, no, on, off")
+            raise RuntimeError(
+                "notify.enabled must be one of: true, false, 1, 0, yes, no, on, off"
+            )
     elif key == "managed.ttl-seconds":
         try:
             normalized = int(normalized)
         except ValueError as exc:
-            raise RuntimeError("managed.ttl-seconds must be an integer number of seconds") from exc
+            raise RuntimeError(
+                "managed.ttl-seconds must be an integer number of seconds"
+            ) from exc
     elif key == "inline.max-sessions":
         try:
             normalized = int(normalized)
         except ValueError as exc:
-            raise RuntimeError("inline.max-sessions must be an integer between 1 and 4") from exc
+            raise RuntimeError(
+                "inline.max-sessions must be an integer between 1 and 4"
+            ) from exc
         if normalized < 1 or normalized > DEFAULT_MAX_INLINE_SESSIONS:
             raise RuntimeError("inline.max-sessions must be between 1 and 4")
     config[field] = normalized

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Callable, Dict, Iterable, List, Optional
+from collections.abc import Iterable
+from typing import Callable, Dict, List, Optional
 
 from .base import Notifier
 from .config import NotifyConfig
@@ -43,7 +44,9 @@ class NotifierRegistry:
             factory = self._factories.get(provider)
             if factory is None:
                 supported = ", ".join(self.names())
-                raise NotifyConfigError(f"Unsupported notifier: {provider}. Supported notifiers: {supported}")
+                raise NotifyConfigError(
+                    f"Unsupported notifier: {provider}. Supported notifiers: {supported}"
+                )
             notifiers.append(factory(config, http_client))
         return notifiers
 
@@ -52,7 +55,9 @@ def _discord_factory(config: NotifyConfig, http_client: HTTPClient | None) -> No
     return DiscordNotifier(config, http_client=http_client)
 
 
-def _tmux_bridge_factory(config: NotifyConfig, http_client: HTTPClient | None) -> Notifier:
+def _tmux_bridge_factory(
+    config: NotifyConfig, http_client: HTTPClient | None
+) -> Notifier:
     _ = http_client
     return TmuxBridgeNotifier(config)
 

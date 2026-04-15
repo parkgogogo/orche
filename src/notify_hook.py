@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 NOTIFY_DISCORD_SH = r"""#!/bin/bash
 
 set -euo pipefail

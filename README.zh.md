@@ -185,6 +185,21 @@ uv tool install tmux-orche
 orche --help
 ```
 
+## 开发
+
+安装本地开发工具链：
+
+```bash
+uv sync --extra dev
+```
+
+常用检查命令：
+
+```bash
+uv run ruff check .
+uv run basedpyright
+```
+
 ### 给 Agent
 
 想让另一个 agent 替你装，把这个链接丢给它：

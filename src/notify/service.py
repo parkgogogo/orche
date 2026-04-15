@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
-from typing import Any, Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Callable
 
 from .config import load_notify_config
 from .exceptions import NotifyConfigError
@@ -32,7 +33,9 @@ class NotificationService:
     ) -> Sequence[DeliveryResult]:
         if not routes:
             return ()
-        requested_providers = tuple(dict.fromkeys(route.provider for route in routes if route.provider))
+        requested_providers = tuple(
+            dict.fromkeys(route.provider for route in routes if route.provider)
+        )
         notifiers = {}
         for provider in requested_providers:
             try:
@@ -46,12 +49,16 @@ class NotificationService:
             if created:
                 notifiers[provider] = created[0]
         results: list[DeliveryResult] = []
-        with ThreadPoolExecutor(max_workers=max(1, min(MAX_NOTIFY_WORKERS, len(routes)))) as executor:
+        with ThreadPoolExecutor(
+            max_workers=max(1, min(MAX_NOTIFY_WORKERS, len(routes)))
+        ) as executor:
             future_map = {}
             for route in routes:
                 notifier = notifiers.get(route.provider)
                 if notifier is None:
-                    supported = ", ".join(sorted(notifiers)) or ", ".join(self.registry.names())
+                    supported = ", ".join(sorted(notifiers)) or ", ".join(
+                        self.registry.names()
+                    )
                     results.append(
                         DeliveryResult(
                             provider=route.provider,
@@ -76,7 +83,9 @@ class NotificationService:
                             target=route.target,
                         )
                     )
-        return tuple(sorted(results, key=lambda result: (result.provider, result.target)))
+        return tuple(
+            sorted(results, key=lambda result: (result.provider, result.target))
+        )
 
 
 def resolve_routes(
@@ -93,7 +102,13 @@ def resolve_routes(
         binding = raw_binding if isinstance(raw_binding, Mapping) else {}
         if str(binding.get("provider") or "").strip() == "telegram":
             explicit_provider = "telegram"
-        return (ResolvedRoute(provider=explicit_provider, target=normalized_channel_id, session=event.session),)
+        return (
+            ResolvedRoute(
+                provider=explicit_provider,
+                target=normalized_channel_id,
+                session=event.session,
+            ),
+        )
 
     raw_binding = runtime_config.get("notify_binding")
     binding = raw_binding if isinstance(raw_binding, Mapping) else {}

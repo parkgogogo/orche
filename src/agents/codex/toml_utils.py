@@ -58,7 +58,9 @@ def validate_toml_document(content: str, *, label: str) -> None:
     try:
         tomllib.loads(content)
     except tomllib.TOMLDecodeError as exc:
-        raise RuntimeError(f"Refusing to write invalid TOML for {label}: {exc}") from exc
+        raise RuntimeError(
+            f"Refusing to write invalid TOML for {label}: {exc}"
+        ) from exc
 
 
 def _project_header_path(line: str) -> str | None:
@@ -73,7 +75,7 @@ def _project_header_path(line: str) -> str | None:
 
 
 def render_project_trust_block(cwd: Path) -> str:
-    return f"[projects.{json.dumps(str(cwd.resolve()))}]\ntrust_level = \"trusted\"\n"
+    return f'[projects.{json.dumps(str(cwd.resolve()))}]\ntrust_level = "trusted"\n'
 
 
 def upsert_project_trust(content: str, cwd: Path) -> str:
@@ -83,7 +85,9 @@ def upsert_project_trust(content: str, cwd: Path) -> str:
         if _project_header_path(line) != target:
             continue
         section_end = index + 1
-        while section_end < len(lines) and not TOML_TABLE_HEADER_RE.match(lines[section_end]):
+        while section_end < len(lines) and not TOML_TABLE_HEADER_RE.match(
+            lines[section_end]
+        ):
             section_end += 1
         for trust_index in range(index + 1, section_end):
             if not TOML_TRUST_LEVEL_RE.match(lines[trust_index]):
@@ -103,9 +107,14 @@ def upsert_project_trust(content: str, cwd: Path) -> str:
     return updated + render_project_trust_block(cwd)
 
 
-def upsert_top_level_setting(content: str, *, setting_line: str, matcher: re.Pattern[str]) -> str:
+def upsert_top_level_setting(
+    content: str, *, setting_line: str, matcher: re.Pattern[str]
+) -> str:
     lines = content.splitlines(keepends=True)
-    first_table_index = next((index for index, line in enumerate(lines) if TOML_TABLE_HEADER_RE.match(line)), len(lines))
+    first_table_index = next(
+        (index for index, line in enumerate(lines) if TOML_TABLE_HEADER_RE.match(line)),
+        len(lines),
+    )
     prefix = [line for line in lines[:first_table_index] if not matcher.match(line)]
     suffix = lines[first_table_index:]
     while prefix and not prefix[-1].strip():
@@ -125,20 +134,35 @@ def upsert_top_level_setting(content: str, *, setting_line: str, matcher: re.Pat
 
 
 def upsert_top_level_notify(content: str, notify_line: str) -> str:
-    return upsert_top_level_setting(content, setting_line=notify_line, matcher=TOML_NOTIFY_KEY_RE)
+    return upsert_top_level_setting(
+        content, setting_line=notify_line, matcher=TOML_NOTIFY_KEY_RE
+    )
 
 
 def upsert_update_check_setting(content: str, *, enabled: bool) -> str:
-    return upsert_top_level_setting(content, setting_line=render_update_check_setting(enabled), matcher=TOML_UPDATE_CHECK_RE)
+    return upsert_top_level_setting(
+        content,
+        setting_line=render_update_check_setting(enabled),
+        matcher=TOML_UPDATE_CHECK_RE,
+    )
 
 
-def _upsert_table_setting(content: str, *, header_re: re.Pattern[str], header_name: str, matcher: re.Pattern[str], setting_line: str) -> str:
+def _upsert_table_setting(
+    content: str,
+    *,
+    header_re: re.Pattern[str],
+    header_name: str,
+    matcher: re.Pattern[str],
+    setting_line: str,
+) -> str:
     lines = content.splitlines(keepends=True)
     for index, line in enumerate(lines):
         if not header_re.match(line):
             continue
         section_end = index + 1
-        while section_end < len(lines) and not TOML_TABLE_HEADER_RE.match(lines[section_end]):
+        while section_end < len(lines) and not TOML_TABLE_HEADER_RE.match(
+            lines[section_end]
+        ):
             section_end += 1
         for setting_index in range(index + 1, section_end):
             if not matcher.match(lines[setting_index]):
@@ -159,11 +183,25 @@ def _upsert_table_setting(content: str, *, header_re: re.Pattern[str], header_na
 
 
 def upsert_hide_rate_limit_model_nudge(content: str, *, enabled: bool) -> str:
-    return _upsert_table_setting(content, header_re=TOML_NOTICE_HEADER_RE, header_name="notice", matcher=TOML_HIDE_RATE_LIMIT_MODEL_NUDGE_RE, setting_line=render_notice_boolean_setting("hide_rate_limit_model_nudge", enabled))
+    return _upsert_table_setting(
+        content,
+        header_re=TOML_NOTICE_HEADER_RE,
+        header_name="notice",
+        matcher=TOML_HIDE_RATE_LIMIT_MODEL_NUDGE_RE,
+        setting_line=render_notice_boolean_setting(
+            "hide_rate_limit_model_nudge", enabled
+        ),
+    )
 
 
 def upsert_codex_hooks_feature(content: str, *, enabled: bool) -> str:
-    return _upsert_table_setting(content, header_re=TOML_FEATURES_HEADER_RE, header_name="features", matcher=TOML_CODEX_HOOKS_RE, setting_line=render_notice_boolean_setting("codex_hooks", enabled))
+    return _upsert_table_setting(
+        content,
+        header_re=TOML_FEATURES_HEADER_RE,
+        header_name="features",
+        matcher=TOML_CODEX_HOOKS_RE,
+        setting_line=render_notice_boolean_setting("codex_hooks", enabled),
+    )
 
 
 __all__ = [

@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping, Protocol
+from typing import Any, Protocol
 
 from tls import urlopen
 
@@ -23,8 +24,7 @@ class HTTPClient(Protocol):
         headers: Mapping[str, str],
         json_body: Mapping[str, Any],
         timeout: float,
-    ) -> HTTPResponse:
-        ...
+    ) -> HTTPResponse: ...
 
 
 class UrllibHTTPClient:

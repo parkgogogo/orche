@@ -48,7 +48,9 @@ def validate_discord_channel_id(value: str) -> str:
     return channel_id
 
 
-def write_text_atomically(path: Path, content: str, *, backup_path: Path | None = None) -> None:
+def write_text_atomically(
+    path: Path, content: str, *, backup_path: Path | None = None
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     temp_path.write_text(content, encoding="utf-8")
@@ -152,7 +154,9 @@ def orche_bootstrap_command(*, shim_path: Path | None = None) -> list[str]:
 def ensure_orche_shim() -> Path:
     ensure_directories()
     shim_path = bridges_dir() / "bin" / "orche"
-    shim_command = " ".join(shlex.quote(part) for part in orche_bootstrap_command(shim_path=shim_path))
+    shim_command = " ".join(
+        shlex.quote(part) for part in orche_bootstrap_command(shim_path=shim_path)
+    )
     shim_body = "\n".join(
         (
             "#!/bin/sh",

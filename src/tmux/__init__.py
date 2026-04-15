@@ -1,4 +1,11 @@
-from .client import process_cpu_percent, process_descendants, process_is_alive, require_tmux, run, tmux
+from .client import (
+    process_cpu_percent,
+    process_descendants,
+    process_is_alive,
+    require_tmux,
+    run,
+    tmux,
+)
 from .query import (
     DEFAULT_CAPTURE_LINES,
     LEGACY_TMUX_SESSION,

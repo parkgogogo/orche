@@ -183,6 +183,21 @@ Verify the install:
 orche --help
 ```
 
+## Development
+
+Install the local development toolchain:
+
+```bash
+uv sync --extra dev
+```
+
+Common checks:
+
+```bash
+uv run ruff check .
+uv run basedpyright
+```
+
 ### For Agents
 
 If you want another agent to install `tmux-orche` for you, paste this raw guide link into that agent session:

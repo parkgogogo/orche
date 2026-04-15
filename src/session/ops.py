@@ -2,14 +2,23 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, Dict, List, Mapping, Optional
+from collections.abc import Mapping
+from typing import Any, Dict, List, Optional
 
 from tmux.bridge import bridge_resolve
 from tmux.client import tmux
 from tmux.query import TMUX_SESSION, _tmux_has_session, get_pane_info, pane_exists
 
 from .config import managed_session_ttl_seconds
-from .meta import _iter_meta_payloads, load_meta, log_exception, remove_meta, save_meta, session_key, session_lock
+from .meta import (
+    _iter_meta_payloads,
+    load_meta,
+    log_exception,
+    remove_meta,
+    save_meta,
+    session_key,
+    session_lock,
+)
 
 
 def tmux_session_name(session: str) -> str:
@@ -24,8 +33,14 @@ def session_parent(meta: Mapping[str, Any]) -> str:
     return str(meta.get("parent_session") or "").strip()
 
 
-def managed_session_last_event_at(meta: Mapping[str, Any], *, default: float = 0.0) -> float:
-    for value in (meta.get("last_event_at"), meta.get("updated_at"), meta.get("last_seen_at")):
+def managed_session_last_event_at(
+    meta: Mapping[str, Any], *, default: float = 0.0
+) -> float:
+    for value in (
+        meta.get("last_event_at"),
+        meta.get("updated_at"),
+        meta.get("last_seen_at"),
+    ):
         try:
             numeric = float(value or 0.0)
         except (TypeError, ValueError):
@@ -48,10 +63,16 @@ def touch_session_event(session: str, *, source: str = "") -> Dict[str, Any]:
         meta["last_event_source"] = str(source or "").strip()
         meta["expires_after_seconds"] = managed_session_ttl_seconds()
         save_meta(session_name, meta)
-        return {"last_event_at": timestamp, "last_event_source": meta["last_event_source"], "expires_after_seconds": meta["expires_after_seconds"]}
+        return {
+            "last_event_at": timestamp,
+            "last_event_source": meta["last_event_source"],
+            "expires_after_seconds": meta["expires_after_seconds"],
+        }
 
 
-def session_metadata_is_live(session: str, meta: Optional[Mapping[str, Any]] = None) -> bool:
+def session_metadata_is_live(
+    session: str, meta: Optional[Mapping[str, Any]] = None
+) -> bool:
     session_name = str(session or "").strip()
     payload: Mapping[str, Any] = meta or load_meta(session_name)
     if not session_name or not payload:
@@ -64,7 +85,9 @@ def session_metadata_is_live(session: str, meta: Optional[Mapping[str, Any]] = N
         return True
     if str(payload.get("tmux_mode") or "").strip() == "inline-pane":
         return False
-    target_tmux_session = str(payload.get("tmux_session") or tmux_session_name(session_name)).strip()
+    target_tmux_session = str(
+        payload.get("tmux_session") or tmux_session_name(session_name)
+    ).strip()
     return bool(target_tmux_session and _tmux_has_session(target_tmux_session))
 
 
@@ -121,10 +144,15 @@ def session_exists(session: str) -> bool:
     if meta:
         remove_meta(session_name)
     fallback_pane_id = str(meta.get("pane_id") or "").strip() if meta else ""
-    return bool(bridge_resolve(session_name, fallback_pane_id=fallback_pane_id) or _tmux_has_session(tmux_session_name(session_name)))
+    return bool(
+        bridge_resolve(session_name, fallback_pane_id=fallback_pane_id)
+        or _tmux_has_session(tmux_session_name(session_name))
+    )
 
 
-def expire_managed_sessions(*, now: Optional[float] = None, close_session_tree_fn=None) -> List[str]:
+def expire_managed_sessions(
+    *, now: Optional[float] = None, close_session_tree_fn=None
+) -> List[str]:
     timestamp = time.time() if now is None else now
     if managed_session_ttl_seconds() <= 0:
         return []
@@ -162,24 +190,38 @@ def _current_tmux_value(fmt: str) -> str:
 def attach_session(session: str, *, pane_id: str = "") -> str:
     meta = load_meta(session)
     fallback_pane_id = str(meta.get("pane_id") or "").strip()
-    resolved_pane_id = pane_id or bridge_resolve(session, fallback_pane_id=fallback_pane_id) or fallback_pane_id
+    resolved_pane_id = (
+        pane_id
+        or bridge_resolve(session, fallback_pane_id=fallback_pane_id)
+        or fallback_pane_id
+    )
     info = get_pane_info(resolved_pane_id) if resolved_pane_id else None
     target_tmux_session = str(meta.get("tmux_session") or "").strip()
     if info is not None:
-        target_tmux_session = str(info.get("session_name") or target_tmux_session).strip()
+        target_tmux_session = str(
+            info.get("session_name") or target_tmux_session
+        ).strip()
     if not target_tmux_session:
         target_tmux_session = tmux_session_name(session)
     if not _tmux_has_session(target_tmux_session):
         raise RuntimeError(f"Tmux session not found for session: {session}")
-    if str(meta.get("tmux_mode") or "").strip() == "inline-pane" and os.environ.get("TMUX") and _current_tmux_value("#{session_name}") == target_tmux_session:
-        target_window_id = str((info or {}).get("window_id") or meta.get("window_id") or "").strip()
+    if (
+        str(meta.get("tmux_mode") or "").strip() == "inline-pane"
+        and os.environ.get("TMUX")
+        and _current_tmux_value("#{session_name}") == target_tmux_session
+    ):
+        target_window_id = str(
+            (info or {}).get("window_id") or meta.get("window_id") or ""
+        ).strip()
         if target_window_id:
             tmux("select-window", "-t", target_window_id, check=False, capture=True)
         if resolved_pane_id:
             tmux("select-pane", "-t", resolved_pane_id, check=False, capture=True)
         return target_tmux_session
     if os.environ.get("TMUX"):
-        result = tmux("switch-client", "-t", target_tmux_session, check=False, capture=True)
+        result = tmux(
+            "switch-client", "-t", target_tmux_session, check=False, capture=True
+        )
         if result.returncode != 0:
             tmux("attach-session", "-t", target_tmux_session, check=True, capture=False)
     else:

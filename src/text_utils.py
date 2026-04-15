@@ -34,7 +34,11 @@ def extract_summary_candidate(text: str, *, prompt: str = "") -> str:
     prompt_inline = compact_text(prompt)
     for raw_line in text.splitlines():
         line = raw_line.strip()
-        if not line or line.startswith("```") or line.startswith(("╭", "╰", "│", "› ", "└ ")):
+        if (
+            not line
+            or line.startswith("```")
+            or line.startswith(("╭", "╰", "│", "› ", "└ "))
+        ):
             continue
         if line.startswith("• "):
             line = line[2:].strip()
@@ -48,11 +52,16 @@ def extract_summary_candidate(text: str, *, prompt: str = "") -> str:
             continue
         if line.startswith(("Explored", "Ran ", "Read ", "List ", "Edited ")):
             continue
-        if line.startswith(("OpenAI Codex", "dnq@", "^C")) or ("gpt-" in line and "% left" in line):
+        if line.startswith(("OpenAI Codex", "dnq@", "^C")) or (
+            "gpt-" in line and "% left" in line
+        ):
             continue
         if line.startswith(("session:", "cwd:")):
             continue
-        if prompt_inline and (compact_text(line) == prompt_inline or compact_text(line).endswith(prompt_inline)):
+        if prompt_inline and (
+            compact_text(line) == prompt_inline
+            or compact_text(line).endswith(prompt_inline)
+        ):
             continue
         line = compact_text(line.replace("`", ""))
         if line:

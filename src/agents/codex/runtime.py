@@ -13,6 +13,12 @@ from pathlib import Path
 from json_utils import JSONInputTooLargeError, read_json_file
 from paths import ensure_directories, locks_dir
 
+from ..common import (
+    DEFAULT_RUNTIME_HOME_ROOT,
+    session_key,
+    validate_discord_channel_id,
+    write_text_atomically,
+)
 from .toml_utils import (
     strip_notify_assignments,
     upsert_codex_hooks_feature,
@@ -22,27 +28,46 @@ from .toml_utils import (
     upsert_update_check_setting,
     validate_toml_document,
 )
-from ..common import (
-    DEFAULT_RUNTIME_HOME_ROOT,
-    session_key,
-    validate_discord_channel_id,
-    write_notify_hook,
-    write_text_atomically,
-)
-
 
 DEFAULT_CODEX_SOURCE_HOME = Path.home() / ".codex"
-MANAGED_CODEX_COPY_FILES = (".personality_migration", "auth.json", "config.toml", "hooks.json", "mcp.json", "version.json")
+MANAGED_CODEX_COPY_FILES = (
+    ".personality_migration",
+    "auth.json",
+    "config.toml",
+    "hooks.json",
+    "mcp.json",
+    "version.json",
+)
 MANAGED_CODEX_COPY_GLOBS = ("state_*.sqlite*",)
 MANAGED_CODEX_COPY_DIRS = ("hooks", "memories", "rules", "skills")
-MANAGED_CODEX_EXCLUDE_FILES = ("config.toml.orche.bak", "history.jsonl", "models_cache.json")
-MANAGED_CODEX_EXCLUDE_FILE_GLOBS = ("*.lock", "*.log", "*.pid", "*.sock", "*.tmp", "logs_*.sqlite*")
-MANAGED_CODEX_EXCLUDE_DIRS = {".tmp", "cache", "log", "sessions", "shell_snapshots", "tmp"}
+MANAGED_CODEX_EXCLUDE_FILES = (
+    "config.toml.orche.bak",
+    "history.jsonl",
+    "models_cache.json",
+)
+MANAGED_CODEX_EXCLUDE_FILE_GLOBS = (
+    "*.lock",
+    "*.log",
+    "*.pid",
+    "*.sock",
+    "*.tmp",
+    "logs_*.sqlite*",
+)
+MANAGED_CODEX_EXCLUDE_DIRS = {
+    ".tmp",
+    "cache",
+    "log",
+    "sessions",
+    "shell_snapshots",
+    "tmp",
+}
 SOURCE_CONFIG_LOCK_NAME = "codex-source-config"
 SOURCE_CONFIG_BACKUP_SUFFIX = ".orche.bak"
 
 
-def default_codex_home_path(session: str, runtime_home_root: Path | None = None) -> Path:
+def default_codex_home_path(
+    session: str, runtime_home_root: Path | None = None
+) -> Path:
     root = Path(runtime_home_root or DEFAULT_RUNTIME_HOME_ROOT)
     return root / f"orche-codex-{session_key(session)}"
 
@@ -68,7 +93,13 @@ def source_codex_config_backup_path(source_home: Path | None = None) -> Path:
     return config_path.with_name(config_path.name + SOURCE_CONFIG_BACKUP_SUFFIX)
 
 
-def render_hook_command(hook_path: Path, *, session: str, discord_channel_id: str | None, status: str | None = None) -> str:
+def render_hook_command(
+    hook_path: Path,
+    *,
+    session: str,
+    discord_channel_id: str | None,
+    status: str | None = None,
+) -> str:
     values = ["/bin/bash", str(hook_path), "--session", session]
     if discord_channel_id:
         values.extend(["--channel-id", validate_discord_channel_id(discord_channel_id)])
@@ -77,7 +108,9 @@ def render_hook_command(hook_path: Path, *, session: str, discord_channel_id: st
     return f"{' '.join(shlex.quote(value) for value in values)} >/dev/null"
 
 
-def render_notify_assignment(hook_path: Path, *, session: str, discord_channel_id: str | None) -> str:
+def render_notify_assignment(
+    hook_path: Path, *, session: str, discord_channel_id: str | None
+) -> str:
     values = ["/bin/bash", str(hook_path), "--session", session]
     if discord_channel_id:
         values.extend(["--channel-id", validate_discord_channel_id(discord_channel_id)])
@@ -96,7 +129,9 @@ def _read_json_object(path: Path) -> dict[str, object]:
     except (json.JSONDecodeError, JSONInputTooLargeError) as exc:
         raise RuntimeError(f"Refusing to write invalid JSON for {path}: {exc}") from exc
     if not isinstance(payload, dict):
-        raise RuntimeError(f"Refusing to rewrite non-object Codex hooks config at {path}")
+        raise RuntimeError(
+            f"Refusing to rewrite non-object Codex hooks config at {path}"
+        )
     return payload
 
 
@@ -110,20 +145,45 @@ def _managed_codex_ignore(_directory: str, names: list[str]) -> set[str]:
         if name in MANAGED_CODEX_EXCLUDE_DIRS:
             ignored.add(name)
             continue
-        if name in MANAGED_CODEX_EXCLUDE_FILES or _matches_any(name, MANAGED_CODEX_EXCLUDE_FILE_GLOBS):
+        if name in MANAGED_CODEX_EXCLUDE_FILES or _matches_any(
+            name, MANAGED_CODEX_EXCLUDE_FILE_GLOBS
+        ):
             ignored.add(name)
     return ignored
 
 
-def build_hooks_payload(codex_home: Path, *, session: str, discord_channel_id: str | None, source_payload: dict[str, object] | None = None) -> dict[str, object]:
+def build_hooks_payload(
+    codex_home: Path,
+    *,
+    session: str,
+    discord_channel_id: str | None,
+    source_payload: dict[str, object] | None = None,
+) -> dict[str, object]:
     payload = dict(source_payload or {})
     existing_hooks = payload.get("hooks")
     hooks = dict(existing_hooks) if isinstance(existing_hooks, dict) else {}
-    command_hook = {"type": "command", "command": render_hook_command(default_notify_hook_path(codex_home), session=session, discord_channel_id=discord_channel_id)}
-    session_start_entries = list(hooks.get("SessionStart")) if isinstance(hooks.get("SessionStart"), list) else []
+    command_hook = {
+        "type": "command",
+        "command": render_hook_command(
+            default_notify_hook_path(codex_home),
+            session=session,
+            discord_channel_id=discord_channel_id,
+        ),
+    }
+    raw_session_start_entries = hooks.get("SessionStart")
+    session_start_entries = (
+        list(raw_session_start_entries)
+        if isinstance(raw_session_start_entries, list)
+        else []
+    )
     session_start_entries.append({"matcher": "startup", "hooks": [command_hook]})
     hooks["SessionStart"] = session_start_entries
-    prompt_submit_entries = list(hooks.get("UserPromptSubmit")) if isinstance(hooks.get("UserPromptSubmit"), list) else []
+    raw_prompt_submit_entries = hooks.get("UserPromptSubmit")
+    prompt_submit_entries = (
+        list(raw_prompt_submit_entries)
+        if isinstance(raw_prompt_submit_entries, list)
+        else []
+    )
     prompt_submit_entries.append({"hooks": [command_hook]})
     hooks["UserPromptSubmit"] = prompt_submit_entries
     payload["hooks"] = hooks
@@ -200,13 +260,19 @@ def sync_trust_to_source_config(cwd: Path, *, source_home: Path | None = None) -
         updated = upsert_project_trust(original, cwd)
         if updated != original:
             validate_toml_document(updated, label=str(config_path))
-            write_text_atomically(config_path, updated, backup_path=source_codex_config_backup_path(source_home))
+            write_text_atomically(
+                config_path,
+                updated,
+                backup_path=source_codex_config_backup_path(source_home),
+            )
         return updated
 
 
 def _copy_path(source: Path, target: Path) -> None:
     if source.is_dir():
-        shutil.copytree(source, target, dirs_exist_ok=True, ignore=_managed_codex_ignore)
+        shutil.copytree(
+            source, target, dirs_exist_ok=True, ignore=_managed_codex_ignore
+        )
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, target)
@@ -223,7 +289,9 @@ def cleanup_managed_codex_home(codex_home: Path) -> None:
             kept_dir_names.append(name)
         dir_names[:] = kept_dir_names
         for name in file_names:
-            if name in MANAGED_CODEX_EXCLUDE_FILES or _matches_any(name, MANAGED_CODEX_EXCLUDE_FILE_GLOBS):
+            if name in MANAGED_CODEX_EXCLUDE_FILES or _matches_any(
+                name, MANAGED_CODEX_EXCLUDE_FILE_GLOBS
+            ):
                 with contextlib.suppress(OSError):
                     (root_path / name).unlink()
 
@@ -259,7 +327,11 @@ def rewrite_codex_config(
     config_toml_path = codex_home / "config.toml"
     hooks_json_path = default_hooks_path(codex_home)
     base_content = sync_trust_to_source_config(cwd, source_home=source_home)
-    notify_line = render_notify_assignment(default_notify_hook_path(codex_home), session=session, discord_channel_id=discord_channel_id)
+    notify_line = render_notify_assignment(
+        default_notify_hook_path(codex_home),
+        session=session,
+        discord_channel_id=discord_channel_id,
+    )
     updated = "".join(strip_notify_assignments(base_content.splitlines(keepends=True)))
     updated = upsert_update_check_setting(updated, enabled=False)
     updated = upsert_hide_rate_limit_model_nudge(updated, enabled=True)
@@ -267,8 +339,15 @@ def rewrite_codex_config(
     updated = upsert_codex_hooks_feature(updated, enabled=True)
     validate_toml_document(updated, label=str(config_toml_path))
     write_text_atomically(config_toml_path, updated)
-    hooks_payload = build_hooks_payload(codex_home, session=session, discord_channel_id=discord_channel_id, source_payload=_read_json_object(source_hooks_path()))
-    write_text_atomically(hooks_json_path, json.dumps(hooks_payload, indent=2, ensure_ascii=False) + "\n")
+    hooks_payload = build_hooks_payload(
+        codex_home,
+        session=session,
+        discord_channel_id=discord_channel_id,
+        source_payload=_read_json_object(source_hooks_path()),
+    )
+    write_text_atomically(
+        hooks_json_path, json.dumps(hooks_payload, indent=2, ensure_ascii=False) + "\n"
+    )
 
 
 __all__ = [

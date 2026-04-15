@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from backend import deliver_notify_to_session
+from runtime.agent import deliver_notify_to_session
 
 from .base import Notifier
 from .config import NotifyConfig
@@ -23,7 +23,9 @@ class TmuxBridgeNotifier(Notifier):
             deliver_notify_to_session(target_session, prompt)
         except Exception as exc:
             raise NotifyDeliveryError(f"tmux-bridge delivery failed: {exc}") from exc
-        return DeliveryResult(provider=self.name, ok=True, detail="delivered", target=target_session)
+        return DeliveryResult(
+            provider=self.name, ok=True, detail="delivered", target=target_session
+        )
 
     def _render_prompt(self, event: NotifyEvent) -> str:
         status = event.status.strip().lower() or "success"

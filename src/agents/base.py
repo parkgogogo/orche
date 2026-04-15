@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Protocol, Sequence
+from typing import Any, Protocol
 
 AgentConfig = Mapping[str, Any]
 
@@ -56,7 +57,9 @@ class AgentPlugin(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def matches_process(self, pane_command: str, descendant_commands: Iterable[str]) -> bool:
+    def matches_process(
+        self, pane_command: str, descendant_commands: Iterable[str]
+    ) -> bool:
         raise NotImplementedError
 
     @abstractmethod

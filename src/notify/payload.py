@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable
 
-from json_utils import JSONInputTooLargeError, MAX_JSON_INPUT_BYTES, loads_json
+from json_utils import MAX_JSON_INPUT_BYTES, JSONInputTooLargeError, loads_json
+
 from .config import NotifyConfig
 from .models import NotifyEvent
 
@@ -34,21 +36,97 @@ EVENT_ALIASES = {
 }
 SUPPORTED_EVENTS = set(EVENT_ALIASES) | set(EVENT_ALIASES.values())
 _FIELD_SPECS: dict[str, list[tuple[str, ...]]] = {
-    "event": [("event",), ("type",), ("kind",), ("hook_event_name",), ("notification_type",), ("name",), ("notification", "event"), ("payload", "event"), ("payload", "hook_event_name")],
-    "assistant_message": [("last_agent_message",), ("lastAgentMessage",), ("last-assistant-message",), ("last_assistant_message",), ("lastAssistantMessage",), ("summary",), ("payload", "last_agent_message"), ("payload", "lastAgentMessage"), ("payload", "last-assistant-message"), ("payload", "last_assistant_message"), ("payload", "lastAssistantMessage"), ("payload", "summary"), ("content",), ("body",), ("payload", "content"), ("payload", "body"), ("message",), ("payload", "message")],
+    "event": [
+        ("event",),
+        ("type",),
+        ("kind",),
+        ("hook_event_name",),
+        ("notification_type",),
+        ("name",),
+        ("notification", "event"),
+        ("payload", "event"),
+        ("payload", "hook_event_name"),
+    ],
+    "assistant_message": [
+        ("last_agent_message",),
+        ("lastAgentMessage",),
+        ("last-assistant-message",),
+        ("last_assistant_message",),
+        ("lastAssistantMessage",),
+        ("summary",),
+        ("payload", "last_agent_message"),
+        ("payload", "lastAgentMessage"),
+        ("payload", "last-assistant-message"),
+        ("payload", "last_assistant_message"),
+        ("payload", "lastAssistantMessage"),
+        ("payload", "summary"),
+        ("content",),
+        ("body",),
+        ("payload", "content"),
+        ("payload", "body"),
+        ("message",),
+        ("payload", "message"),
+    ],
     "hook_event_name": [("hook_event_name",), ("payload", "hook_event_name")],
     "notification_type": [("notification_type",), ("payload", "notification_type")],
     "title": [("title",), ("payload", "title")],
-    "transcript_path": [("transcript_path",), ("transcriptPath",), ("payload", "transcript_path"), ("payload", "transcriptPath")],
-    "session": [("session",), ("session_id",), ("sessionId",), ("thread_id",), ("thread-id",), ("threadId",), ("payload", "session"), ("payload", "session_id"), ("payload", "sessionId"), ("payload", "thread_id"), ("payload", "thread-id"), ("payload", "threadId")],
+    "transcript_path": [
+        ("transcript_path",),
+        ("transcriptPath",),
+        ("payload", "transcript_path"),
+        ("payload", "transcriptPath"),
+    ],
+    "session": [
+        ("session",),
+        ("session_id",),
+        ("sessionId",),
+        ("thread_id",),
+        ("thread-id",),
+        ("threadId",),
+        ("payload", "session"),
+        ("payload", "session_id"),
+        ("payload", "sessionId"),
+        ("payload", "thread_id"),
+        ("payload", "thread-id"),
+        ("payload", "threadId"),
+    ],
     "cwd": [("cwd",), ("payload", "cwd")],
-    "turn_id": [("turn_id",), ("turn-id",), ("turnId",), ("metadata", "turn_id"), ("metadata", "turn-id"), ("metadata", "turnId"), ("payload", "turn_id"), ("payload", "turn-id"), ("payload", "turnId")],
+    "turn_id": [
+        ("turn_id",),
+        ("turn-id",),
+        ("turnId",),
+        ("metadata", "turn_id"),
+        ("metadata", "turn-id"),
+        ("metadata", "turnId"),
+        ("payload", "turn_id"),
+        ("payload", "turn-id"),
+        ("payload", "turnId"),
+    ],
     "source": [("source",), ("metadata", "source"), ("payload", "source")],
-    "tail_text": [("tail_text",), ("tail",), ("metadata", "tail_text"), ("metadata", "tail"), ("payload", "tail_text"), ("payload", "tail")],
-    "tail_lines": [("tail_lines",), ("metadata", "tail_lines"), ("payload", "tail_lines")],
+    "tail_text": [
+        ("tail_text",),
+        ("tail",),
+        ("metadata", "tail_text"),
+        ("metadata", "tail"),
+        ("payload", "tail_text"),
+        ("payload", "tail"),
+    ],
+    "tail_lines": [
+        ("tail_lines",),
+        ("metadata", "tail_lines"),
+        ("payload", "tail_lines"),
+    ],
 }
 _LIST_FIELD_SPECS: dict[str, list[tuple[str, ...]]] = {
-    "input_message": [("input_messages",), ("input-messages",), ("inputMessages",), ("messages",), ("payload", "input_messages"), ("payload", "input-messages"), ("payload", "inputMessages")]
+    "input_message": [
+        ("input_messages",),
+        ("input-messages",),
+        ("inputMessages",),
+        ("messages",),
+        ("payload", "input_messages"),
+        ("payload", "input-messages"),
+        ("payload", "inputMessages"),
+    ]
 }
 _DEFAULT_SUMMARIES = {
     "failed": "Agent turn failed",
@@ -60,7 +138,16 @@ _DEFAULT_SUMMARIES = {
     "needs-input": "Agent likely needs input",
     "stalled": "Agent turn stalled",
 }
-_SUMMARY_LOADER_EVENTS = {"session-start", "prompt-accepted", "notification", "permission-request", "startup-blocked"}
+_SUMMARY_LOADER_EVENTS = {
+    "session-start",
+    "prompt-accepted",
+    "notification",
+    "permission-request",
+    "startup-blocked",
+}
+_MARKDOWN_HEADING_PREFIX = re.compile(r"^#{1,6}\s+")
+
+
 def _first_string(*values: Any) -> str:
     for value in values:
         if value is None:
@@ -69,6 +156,8 @@ def _first_string(*values: Any) -> str:
         if text:
             return text
     return ""
+
+
 def _lookup(payload: Mapping[str, Any], path: tuple[str, ...]) -> Any:
     current: Any = payload
     for part in path:
@@ -76,8 +165,12 @@ def _lookup(payload: Mapping[str, Any], path: tuple[str, ...]) -> Any:
             return None
         current = current[part]
     return current
+
+
 def _extract(payload: Mapping[str, Any], key: str) -> str:
     return _first_string(*(_lookup(payload, path) for path in _FIELD_SPECS[key]))
+
+
 def _extract_last_list_text(payload: Mapping[str, Any], key: str) -> str:
     for path in _LIST_FIELD_SPECS[key]:
         candidate = _lookup(payload, path)
@@ -88,6 +181,8 @@ def _extract_last_list_text(payload: Mapping[str, Any], key: str) -> str:
             if text:
                 return text
     return ""
+
+
 def parse_payload(payload_text: str) -> Mapping[str, Any] | None:
     raw = payload_text.strip()
     if not raw:
@@ -97,10 +192,16 @@ def parse_payload(payload_text: str) -> Mapping[str, Any] | None:
     except (json.JSONDecodeError, JSONInputTooLargeError):
         return None
     return payload if isinstance(payload, Mapping) else None
+
+
 def _compact_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
+
+
 def _is_list_like(line: str) -> bool:
     return bool(re.match(r"^([-*+]\s+|\d+\.\s+|>\s+)", line))
+
+
 def _truncate_discord_text(text: str, max_chars: int) -> str:
     value = text.strip()
     if len(value) <= max_chars:
@@ -118,6 +219,8 @@ def _truncate_discord_text(text: str, max_chars: int) -> str:
             truncated = truncated.rsplit("\n", 1)[0].rstrip() or truncated
         return f"{truncated}{ellipsis}{closing}"
     return f"{truncated}{ellipsis}"
+
+
 def summarize_assistant_message(text: str, *, max_chars: int) -> str:
     blocks: list[str] = []
     paragraph_lines: list[str] = []
@@ -171,10 +274,11 @@ def summarize_assistant_message(text: str, *, max_chars: int) -> str:
             flush_paragraph()
             flush_list()
             continue
-        if re.match(r"^#{1,6}\s+", stripped):
+        if _MARKDOWN_HEADING_PREFIX.match(stripped):
             flush_paragraph()
             flush_list()
-            blocks.append(f"**{_compact_text(re.sub(r'^#{1,6}\\s+', '', stripped))}**")
+            heading = _compact_text(_MARKDOWN_HEADING_PREFIX.sub("", stripped))
+            blocks.append(f"**{heading}**")
             continue
         normalized = _compact_text(stripped)
         if _is_list_like(normalized):
@@ -187,13 +291,28 @@ def summarize_assistant_message(text: str, *, max_chars: int) -> str:
         flush_code_block()
     flush_paragraph()
     flush_list()
-    return _truncate_discord_text("\n\n".join(block for block in blocks if block.strip()), max_chars)
+    return _truncate_discord_text(
+        "\n\n".join(block for block in blocks if block.strip()), max_chars
+    )
+
+
 def _event_name(payload: Mapping[str, Any]) -> str:
-    return EVENT_ALIASES.get(_extract(payload, "event").lower(), _extract(payload, "event").lower())
+    return EVENT_ALIASES.get(
+        _extract(payload, "event").lower(), _extract(payload, "event").lower()
+    )
+
+
 def _is_stop_hook_payload(payload: Mapping[str, Any]) -> bool:
     raw = _extract(payload, "hook_event_name").lower()
-    return EVENT_ALIASES.get(raw, raw) == "completed" and raw in {"stop", "subagentstop"}
-def _assistant_message_from_transcript(payload: Mapping[str, Any], *, wait_seconds: float = 0.0) -> str:
+    return EVENT_ALIASES.get(raw, raw) == "completed" and raw in {
+        "stop",
+        "subagentstop",
+    }
+
+
+def _assistant_message_from_transcript(
+    payload: Mapping[str, Any], *, wait_seconds: float = 0.0
+) -> str:
     transcript_path = _extract(payload, "transcript_path")
     if not transcript_path:
         return ""
@@ -214,7 +333,11 @@ def _assistant_message_from_transcript(payload: Mapping[str, Any], *, wait_secon
                 entry = loads_json(raw, source=str(path))
             except (json.JSONDecodeError, JSONInputTooLargeError):
                 continue
-            message = entry.get("message") if isinstance(entry, Mapping) and entry.get("type") == "assistant" else None
+            message = (
+                entry.get("message")
+                if isinstance(entry, Mapping) and entry.get("type") == "assistant"
+                else None
+            )
             content = message.get("content") if isinstance(message, Mapping) else None
             if not isinstance(content, list):
                 continue
@@ -226,7 +349,14 @@ def _assistant_message_from_transcript(payload: Mapping[str, Any], *, wait_secon
         if time.monotonic() >= deadline:
             return ""
         time.sleep(0.25)
-def _target_provider(*, runtime_config: Mapping[str, Any], notify_config: NotifyConfig, explicit_channel_id: str = "") -> str:
+
+
+def _target_provider(
+    *,
+    runtime_config: Mapping[str, Any],
+    notify_config: NotifyConfig,
+    explicit_channel_id: str = "",
+) -> str:
     if str(explicit_channel_id or "").strip():
         return "discord"
     binding = runtime_config.get("notify_binding")
@@ -236,11 +366,22 @@ def _target_provider(*, runtime_config: Mapping[str, Any], notify_config: Notify
         if provider and target:
             return provider
     return str(notify_config.provider or "").strip()
+
+
 def _default_summary_for_event(event_name: str, notify_config: NotifyConfig) -> str:
     return _DEFAULT_SUMMARIES.get(event_name, notify_config.default_message_prefix)
+
+
 def _normalize_event_status(event_name: str, status: str) -> str:
     normalized = status.strip().lower() or "success"
-    return event_name if normalized == "warning" and event_name in {"stalled", "needs-input", "startup-blocked"} else normalized
+    return (
+        event_name
+        if normalized == "warning"
+        and event_name in {"stalled", "needs-input", "startup-blocked"}
+        else normalized
+    )
+
+
 def build_message_from_payload(
     payload_text: str,
     *,
@@ -260,24 +401,49 @@ def build_message_from_payload(
         return None
     if event_name not in SUPPORTED_EVENTS:
         return None
-    session = _first_string(explicit_session, _extract(payload, "session"), runtime_config.get("session"))
+    session = _first_string(
+        explicit_session, _extract(payload, "session"), runtime_config.get("session")
+    )
     assistant_message = _extract(payload, "assistant_message")
     loaded_summary = ""
-    transcript_summary = _assistant_message_from_transcript(payload, wait_seconds=3.0) if event_name == "completed" else ""
+    transcript_summary = (
+        _assistant_message_from_transcript(payload, wait_seconds=3.0)
+        if event_name == "completed"
+        else ""
+    )
     if event_name == "completed":
         prefer_loaded_summary = _is_stop_hook_payload(payload)
-        if not transcript_summary and session and (prefer_loaded_summary or not assistant_message):
+        if (
+            not transcript_summary
+            and session
+            and (prefer_loaded_summary or not assistant_message)
+        ):
             loaded_summary = summary_loader(session)
-        assistant_message = _first_string(transcript_summary, loaded_summary, assistant_message) if prefer_loaded_summary else _first_string(transcript_summary, assistant_message, loaded_summary)
+        assistant_message = (
+            _first_string(transcript_summary, loaded_summary, assistant_message)
+            if prefer_loaded_summary
+            else _first_string(transcript_summary, assistant_message, loaded_summary)
+        )
     elif session and event_name not in _SUMMARY_LOADER_EVENTS:
         loaded_summary = summary_loader(session)
     if not assistant_message and loaded_summary:
         assistant_message = loaded_summary
-    provider = _target_provider(runtime_config=runtime_config, notify_config=notify_config, explicit_channel_id=explicit_channel_id)
-    assistant_summary = summarize_assistant_message(assistant_message, max_chars=notify_config.summary_max_chars) if assistant_message and provider == "discord" else assistant_message.strip()
+    provider = _target_provider(
+        runtime_config=runtime_config,
+        notify_config=notify_config,
+        explicit_channel_id=explicit_channel_id,
+    )
+    assistant_summary = (
+        summarize_assistant_message(
+            assistant_message, max_chars=notify_config.summary_max_chars
+        )
+        if assistant_message and provider == "discord"
+        else assistant_message.strip()
+    )
     return NotifyEvent(
         event=event_name or "completed",
-        summary=assistant_summary or _default_summary_for_event(event_name, notify_config),
+        summary=assistant_summary
+        or _default_summary_for_event(event_name, notify_config),
         session=session,
         cwd=_first_string(_extract(payload, "cwd"), runtime_config.get("cwd")),
         status=_normalize_event_status(event_name, status),
