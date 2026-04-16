@@ -247,9 +247,9 @@ class CodexAgent(AgentPlugin):
 
     def submit_prompt(self, session: str, prompt: str, *, bridge: BridgeIO) -> None:
         if prompt:
-            bridge.type(session, prompt)
+            bridge.type(prompt)
             time.sleep(codex_submit_settle_seconds(prompt))
-        bridge.keys(session, ["Enter"])
+        bridge.keys(["Enter"])
 
     def extract_completion_summary(self, capture: str, prompt: str) -> str:
         return _extract_codex_completion_summary(capture, prompt)

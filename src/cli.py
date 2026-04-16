@@ -29,7 +29,8 @@ from backend import (
     current_session_id,
     latest_turn_summary,
     resolve_session_context,
-    send_prompt,
+    send_prompt_to_pane,
+    send_prompt_to_session,
 )
 from notify import (
     NotificationService,
@@ -728,7 +729,7 @@ def open_session(
             cli_args=list(ctx.args),
         )
         if prompt is not None:
-            send_prompt(session, resolved_cwd, agent, prompt, pane_id=_pane_id)
+            send_prompt_to_pane(session, resolved_cwd, agent, prompt, pane_id=_pane_id)
         _print_action_ok("open", session=session)
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)
@@ -807,7 +808,7 @@ def prompt(
             raise OrcheError(
                 f"Session {session} is missing cwd/agent context; open it first"
             )
-        send_prompt(session, cwd, agent, message)
+        send_prompt_to_session(session, cwd, agent, message)
         _print_action_ok("prompt", session=session)
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)

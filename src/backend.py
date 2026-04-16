@@ -298,18 +298,65 @@ def _start_or_restore_session(
     return pane_id
 
 
-def send_prompt(
+def _pane_bridge_adapter(pane_id: str):
+    resolved_pane_id = str(pane_id or "").strip()
+    if not resolved_pane_id:
+        raise OrcheError("pane_id is required")
+
+    class _Bridge:
+        def type(self, text: str) -> None:
+            if not text:
+                return
+            buffer_name = f"orche-{uuid.uuid4().hex}"
+            try:
+                tmux(
+                    "load-buffer",
+                    "-b",
+                    buffer_name,
+                    "-",
+                    check=True,
+                    capture=True,
+                    input_text=text,
+                )
+                tmux(
+                    "paste-buffer",
+                    "-t",
+                    resolved_pane_id,
+                    "-b",
+                    buffer_name,
+                    check=True,
+                    capture=True,
+                )
+            finally:
+                tmux("delete-buffer", "-b", buffer_name, check=False, capture=True)
+
+        def keys(self, keys: Sequence[str]) -> None:
+            values = list(keys)
+            if values:
+                tmux(
+                    "send-keys",
+                    "-t",
+                    resolved_pane_id,
+                    *values,
+                    check=True,
+                    capture=True,
+                )
+
+    return _Bridge()
+
+
+def send_prompt_to_pane(
     session: str,
     cwd: Path,
     agent: str,
     prompt: str,
     *,
-    pane_id: str = "",
+    pane_id: str,
 ) -> str:
     plugin = get_agent(agent)
     resolved_pane_id = str(pane_id or "").strip()
     if not resolved_pane_id:
-        resolved_pane_id = ensure_session(session)
+        raise OrcheError("pane_id is required")
     meta = load_meta(session)
     wait_for_ack = plugin.name == "claude" and runtime_home_managed_from_meta(meta)
     meta["pending_turn"] = {
@@ -331,7 +378,7 @@ def send_prompt(
     }
     save_meta(session, meta)
     touch_session_event(session, source="prompt-submit")
-    plugin.submit_prompt(session, prompt, bridge=bridge_adapter())
+    plugin.submit_prompt(session, prompt, bridge=_pane_bridge_adapter(resolved_pane_id))
     with contextlib.suppress(Exception):
         start_session_watchdog(session, turn_id=str(meta["pending_turn"]["turn_id"]))
     append_action_history(
@@ -345,6 +392,21 @@ def send_prompt(
             timeout=CLAUDE_PROMPT_ACK_TIMEOUT,
         )
     return resolved_pane_id
+
+
+def send_prompt_to_session(
+    session: str,
+    cwd: Path,
+    agent: str,
+    prompt: str,
+) -> str:
+    return send_prompt_to_pane(
+        session,
+        cwd,
+        agent,
+        prompt,
+        pane_id=ensure_session(session),
+    )
 
 
 def _completion_summary_from_capture(
@@ -555,13 +617,11 @@ def close_session(session: str) -> str:
 
 def bridge_adapter(session: str = "", *, fallback_pane_id: str = ""):
     class _Bridge:
-        def type(self, session: str, text: str) -> None:
-            resolved_session = session or session_name
-            bridge_type(resolved_session, text, fallback_pane_id=fallback_pane_id)
+        def type(self, text: str) -> None:
+            bridge_type(session_name, text, fallback_pane_id=fallback_pane_id)
 
-        def keys(self, session: str, keys: Sequence[str]) -> None:
-            resolved_session = session or session_name
-            bridge_keys(resolved_session, keys, fallback_pane_id=fallback_pane_id)
+        def keys(self, keys: Sequence[str]) -> None:
+            bridge_keys(session_name, keys, fallback_pane_id=fallback_pane_id)
 
     session_name = session
     return _Bridge()

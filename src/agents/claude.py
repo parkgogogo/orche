@@ -415,9 +415,9 @@ class ClaudeAgent(AgentPlugin):
 
     def submit_prompt(self, session: str, prompt: str, *, bridge: BridgeIO) -> None:
         if prompt:
-            bridge.type(session, prompt)
+            bridge.type(prompt)
             time.sleep(CLAUDE_SUBMIT_SETTLE_SECONDS)
-        bridge.keys(session, ["Enter"])
+        bridge.keys(["Enter"])
 
     def build_launch_command(
         self,

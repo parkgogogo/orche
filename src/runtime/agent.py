@@ -123,10 +123,10 @@ def deliver_notify_to_session(session: str, prompt: str) -> str:
         resolved_pane_id = str(pane_id)
 
         class _FallbackBridge:
-            def type(self, session: str, text: str) -> None:
+            def type(self, text: str) -> None:
                 bridge_type(session, text, fallback_pane_id=resolved_pane_id)
 
-            def keys(self, session: str, keys: Sequence[str]) -> None:
+            def keys(self, keys: Sequence[str]) -> None:
                 bridge_keys(session, list(keys), fallback_pane_id=resolved_pane_id)
 
         target_agent = str(target_meta.get("agent") or "").strip().lower() or "codex"

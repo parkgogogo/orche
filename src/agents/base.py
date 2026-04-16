@@ -18,9 +18,9 @@ class AgentRuntime:
 
 
 class BridgeIO(Protocol):
-    def type(self, session: str, text: str) -> None: ...
+    def type(self, text: str) -> None: ...
 
-    def keys(self, session: str, keys: Sequence[str]) -> None: ...
+    def keys(self, keys: Sequence[str]) -> None: ...
 
 
 class AgentPlugin(ABC):
@@ -77,11 +77,11 @@ class AgentPlugin(ABC):
 
     def submit_prompt(self, session: str, prompt: str, *, bridge: BridgeIO) -> None:
         if prompt:
-            bridge.type(session, prompt)
-        bridge.keys(session, ["Enter"])
+            bridge.type(prompt)
+        bridge.keys(["Enter"])
 
     def interrupt(self, session: str, *, bridge: BridgeIO) -> None:
-        bridge.keys(session, ["C-c"])
+        bridge.keys(["C-c"])
 
     def cleanup_runtime(self, runtime: AgentRuntime) -> None:
         return None

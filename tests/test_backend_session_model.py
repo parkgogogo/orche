@@ -167,3 +167,86 @@ def test_open_session_rejects_dead_explicit_tmux_pane_notify(monkeypatch, tmp_pa
             notify="tmux:%12",
             cli_args=[],
         )
+
+
+def test_send_prompt_to_pane_uses_direct_pane_bridge(xdg_runtime, monkeypatch):
+    calls: list[tuple[str, str | list[str]]] = []
+
+    class _PromptPlugin:
+        name = "codex"
+
+        def submit_prompt(self, session, prompt, *, bridge):
+            bridge.type(prompt)
+            bridge.keys(["Enter"])
+
+    backend.save_meta(
+        "demo-session",
+        {
+            "session": "demo-session",
+            "cwd": str(xdg_runtime["home"]),
+            "agent": "codex",
+            "runtime_home_managed": False,
+        },
+    )
+    monkeypatch.setattr(backend, "get_agent", lambda agent: _PromptPlugin())
+    monkeypatch.setattr(backend, "read_pane", lambda pane_id, lines: "")
+    monkeypatch.setattr(backend, "touch_session_event", lambda *args, **kwargs: {})
+    monkeypatch.setattr(backend, "append_action_history", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend, "start_session_watchdog", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        backend,
+        "_pane_bridge_adapter",
+        lambda pane_id: type(
+            "_Bridge",
+            (),
+            {
+                "type": lambda self, text: calls.append(("type", text)),
+                "keys": lambda self, keys: calls.append(("keys", list(keys))),
+            },
+        )(),
+    )
+
+    pane_id = backend.send_prompt_to_pane(
+        "demo-session",
+        Path(xdg_runtime["home"]),
+        "codex",
+        "hello",
+        pane_id="%42",
+    )
+
+    assert pane_id == "%42"
+    assert calls == [
+        ("type", "hello"),
+        ("keys", ["Enter"]),
+    ]
+
+
+def test_send_prompt_to_session_resolves_then_sends_to_pane(xdg_runtime, monkeypatch):
+    calls: list[tuple[str, str, str, str, str]] = []
+
+    monkeypatch.setattr(backend, "ensure_session", lambda session: "%88")
+    monkeypatch.setattr(
+        backend,
+        "send_prompt_to_pane",
+        lambda session, cwd, agent, prompt, *, pane_id: (
+            calls.append((session, str(cwd), agent, prompt, pane_id)) or pane_id
+        ),
+    )
+
+    pane_id = backend.send_prompt_to_session(
+        "demo-session",
+        Path(xdg_runtime["home"]),
+        "codex",
+        "hello",
+    )
+
+    assert pane_id == "%88"
+    assert calls == [
+        (
+            "demo-session",
+            str(Path(xdg_runtime["home"])),
+            "codex",
+            "hello",
+            "%88",
+        )
+    ]
